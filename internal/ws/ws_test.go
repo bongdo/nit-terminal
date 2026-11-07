@@ -16,11 +16,10 @@ func TestForeignOriginRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := &Handler{
-		Roots:     roots,
-		Manager:   session.New(dir, 4),
-		Home:      dir,
-		PeroURL:   "/pero/",
-		AllowHost: func(string) bool { return true },
+		Roots:   roots,
+		Manager: session.New(dir, 4),
+		Home:    dir,
+		PeroURL: "/pero/",
 	}
 
 	target := "/api/ws?session=" + url.QueryEscape("demo")

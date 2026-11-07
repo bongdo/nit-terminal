@@ -14,11 +14,11 @@ import (
 )
 
 type Handler struct {
-	Roots     *session.Roots
-	Manager   *session.Manager
-	Home      string
-	PeroURL   string
-	AllowHost func(string) bool
+	Roots         *session.Roots
+	Manager       *session.Manager
+	Home          string
+	PeroURL       string
+	OriginAllowed func(*http.Request) bool
 }
 
 type hello struct {
@@ -54,7 +54,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	c, err := websocket.Accept(w, r, nil)
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
 	}
@@ -146,17 +146,11 @@ func (h *Handler) originOK(r *http.Request) bool {
 	if origin == "" {
 		return true
 	}
+	if h.OriginAllowed != nil {
+		return h.OriginAllowed(r)
+	}
 	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Host == "" {
-		return false
-	}
-	if !strings.EqualFold(parsed.Host, r.Host) {
-		return false
-	}
-	if h.AllowHost != nil && !h.AllowHost(parsed.Host) {
-		return false
-	}
-	return true
+	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Host, r.Host)
 }
 
 func clamp(value int) int {

@@ -77,11 +77,11 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]any{"sessions": manager.List()})
 	})
 	mux.Handle("GET /api/ws", &ws.Handler{
-		Roots:     roots,
-		Manager:   manager,
-		Home:      home,
-		PeroURL:   peroURL,
-		AllowHost: func(hostport string) bool { return allowedHost(hostport, extraHosts) },
+		Roots:         roots,
+		Manager:       manager,
+		Home:          home,
+		PeroURL:       peroURL,
+		OriginAllowed: func(r *http.Request) bool { return originAllowed(r, extraHosts) },
 	})
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
@@ -164,16 +164,13 @@ func spaHandler() http.Handler {
 
 func secure(next http.Handler, extraHosts []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowedHost(r.Host, extraHosts) {
+		if !allowedHost(requestHost(r), extraHosts) {
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return
 		}
-		if origin := r.Header.Get("Origin"); origin != "" {
-			parsed, err := url.Parse(origin)
-			if err != nil || !allowedHost(parsed.Host, extraHosts) || !strings.EqualFold(parsed.Host, r.Host) {
-				http.Error(w, "forbidden origin", http.StatusForbidden)
-				return
-			}
+		if !originAllowed(r, extraHosts) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
@@ -194,17 +191,52 @@ func secure(next http.Handler, extraHosts []string) http.Handler {
 }
 
 func allowedHost(hostport string, extra []string) bool {
-	host := hostport
-	if parsed, _, err := net.SplitHostPort(hostport); err == nil {
-		host = parsed
-	}
-	host = strings.Trim(host, "[]")
+	host := hostOnly(hostport)
 	switch strings.ToLower(host) {
 	case "127.0.0.1", "localhost", "::1":
 		return true
 	}
 	for _, candidate := range extra {
-		if strings.EqualFold(host, candidate) {
+		if strings.EqualFold(host, hostOnly(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hostOnly(hostport string) string {
+	host := hostport
+	if parsed, _, err := net.SplitHostPort(hostport); err == nil {
+		host = parsed
+	}
+	return strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+}
+
+func requestHost(r *http.Request) string {
+	if host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); host != "" {
+		return host
+	}
+	return r.Host
+}
+
+func originAllowed(r *http.Request, extra []string) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	if !allowedHost(parsed.Host, extra) {
+		return false
+	}
+	originHost := hostOnly(parsed.Host)
+	if strings.EqualFold(originHost, hostOnly(requestHost(r))) {
+		return true
+	}
+	for _, candidate := range extra {
+		if strings.EqualFold(originHost, hostOnly(candidate)) {
 			return true
 		}
 	}
