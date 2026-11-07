@@ -4,3 +4,4 @@ web/dist/
 bin/term-gui
 *.log
 .env*
+!.envrc
