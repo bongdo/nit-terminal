@@ -1,0 +1,6 @@
+node_modules/
+web/dist/
+.cache/
+bin/term-gui
+*.log
+.env*
