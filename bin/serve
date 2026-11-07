@@ -5,4 +5,8 @@ cd "$(dirname "$0")/.."
 port="${TERM_GUI_PORT:-7795}"
 https="${TERM_GUI_SERVE_HTTPS:-8443}"
 
+if [ "${1:-}" = "off" ]; then
+  exec sudo tailscale serve --https="$https" off
+fi
+
 exec sudo tailscale serve --bg --https="$https" "http://127.0.0.1:$port"

@@ -12,6 +12,20 @@ bin/check               # gofmt, vet, tests, typecheck, frontend tests, build
 
 Open <http://127.0.0.1:7795/term/>. Health is `GET /term/api/health`.
 
+## Access from the tailnet
+
+```sh
+bin/serve               # tailnet-only https://<host>:8443/term/
+bin/serve off           # remove it
+```
+
+`bin/serve` binds the terminal to its own HTTPS port. Do not publish it on the
+same `:443` path list as `nit-gui` and `pero-gui`: Tailscale treats every path
+on a funnel-enabled port as public, so a `tailscale serve --set-path /term`
+becomes internet-reachable the moment funnel is on for `:443`. When the terminal
+runs on `:8443`, set an absolute `TERM_GUI_PERO_URL`, otherwise the Ctrl+click
+link resolves against the terminal's own origin.
+
 ## URL contract
 
 | URL | Effect |
