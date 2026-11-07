@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+port="${TERM_GUI_PORT:-7795}"
+base="${TERM_GUI_BASE:-/term}"
+base="${base%/}"
+root="${TERM_GUI_ROOT:-$HOME}"
+host="${TERM_GUI_PUBLIC_HOST:-frankfurt.tailf358cb.ts.net}"
+pero="${TERM_GUI_PERO_URL:-/pero/}"
+auth_env="${TERM_GUI_AUTH_ENV:-$HOME/.config/term-gui/auth.env}"
+run_dir="$PWD/.cache"
+bin="$run_dir/term-gui"
+
+if [ ! -r "$auth_env" ]; then
+  echo "deploy: no auth password; run bin/auth first" >&2
+  exit 1
+fi
+set -a
+. "$auth_env"
+set +a
+if [ -z "${TERM_GUI_PASSWORD:-}" ]; then
+  echo "deploy: empty password in $auth_env" >&2
+  exit 1
+fi
+
+stop() {
+  local pids pid alive
+  pids="$(pgrep -f "(^|/)term-gui --addr 127\.0\.0\.1:$port$" || true)"
+  [ -n "$pids" ] || return 0
+  kill $pids 2>/dev/null || true
+  for _ in $(seq 1 30); do
+    alive=0
+    for pid in $pids; do
+      kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    [ "$alive" = 0 ] && return 0
+    sleep 0.1
+  done
+  kill -9 $pids 2>/dev/null || true
+}
+
+npm --prefix web run build
+
+mkdir -p "$run_dir"
+go build -trimpath -o "$bin" .
+
+stop
+if pgrep -f "(^|/)term-gui --addr 127\.0\.0\.1:$port$" >/dev/null; then
+  echo "deploy: port $port is still held by term-gui" >&2
+  exit 1
+fi
+
+TERM_GUI_ROOT="$root" \
+  TERM_GUI_BASE_PATH="$base" \
+  TERM_GUI_ALLOWED_HOSTS="$host" \
+  TERM_GUI_PERO_URL="$pero" \
+  TERM_GUI_PASSWORD="$TERM_GUI_PASSWORD" \
+  setsid "$bin" --addr "127.0.0.1:$port" >"$run_dir/term-gui.log" 2>&1 </dev/null &
+
+code=""
+for _ in $(seq 1 40); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$base/" || true)"
+  if [ "$code" = 303 ] || [ "$code" = 200 ]; then
+    echo "deploy: local  http://127.0.0.1:$port$base/"
+    echo "deploy: public https://$host$base/"
+    if ! tailscale funnel status 2>/dev/null | grep -q "$base"; then
+      echo "deploy: enable public access with: bin/funnel" >&2
+    fi
+    exit 0
+  fi
+  sleep 0.2
+done
+
+echo "deploy: term-gui did not start (last status: $code)" >&2
+tail -20 "$run_dir/term-gui.log" >&2 || true
+exit 1

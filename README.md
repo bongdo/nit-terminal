@@ -12,19 +12,26 @@ bin/check               # gofmt, vet, tests, typecheck, frontend tests, build
 
 Open <http://127.0.0.1:7795/term/>. Health is `GET /term/api/health`.
 
-## Access from the tailnet
+## Access
 
 ```sh
+bin/auth                # writes TERM_GUI_PASSWORD to ~/.config/term-gui/auth.env
+bin/deploy              # build, restart on 127.0.0.1:7795, health check
+bin/funnel              # public https://<host>/term/ behind the password
 bin/serve               # tailnet-only https://<host>:8443/term/
-bin/serve off           # remove it
 ```
 
-`bin/serve` binds the terminal to its own HTTPS port. Do not publish it on the
-same `:443` path list as `nit-gui` and `pero-gui`: Tailscale treats every path
-on a funnel-enabled port as public, so a `tailscale serve --set-path /term`
-becomes internet-reachable the moment funnel is on for `:443`. When the terminal
-runs on `:8443`, set an absolute `TERM_GUI_PERO_URL`, otherwise the Ctrl+click
-link resolves against the terminal's own origin.
+`bin/deploy` refuses to start without a password file. Every request without a
+valid `term_session` cookie gets the login page; `/api/*` gets `401`. The cookie
+is `HttpOnly`, `SameSite=Strict`, 7 days, `Path=/term/`, and `Secure` when the
+request arrives with `X-Forwarded-Proto: https`. Five wrong passwords from one
+address block it for 15 minutes.
+
+Both `bin/funnel` and `bin/serve` can be enabled at once. Funnel shares the
+`:443` path list with `nit-gui` and `pero-gui`, so every mapped path there is
+public; `bin/serve` keeps a private fallback on `:8443`. Set an absolute
+`TERM_GUI_PERO_URL` when the terminal is reached on a different origin than the
+editor.
 
 ## URL contract
 
@@ -97,6 +104,23 @@ Unicode placeholders, no z-index negotiation, at most 32 images per connection.
 
 xterm.js 6 has no APC hook on `terminal.parser`, so the sequence is parsed in the
 WebSocket-to-xterm write path (`web/src/lib/kitty.ts`) before xterm sees it.
+
+## Security
+
+The password is the only gate in front of a shell. The process runs as the
+service user; `TERM_GUI_ALLOWED_ROOTS` (default `$HOME`) only validates `?dir=`,
+and once a shell is open it can go anywhere that user can. That is the same
+trust as SSH on the host, so keep the password private and rotate it if it leaks.
+
+- Bind is loopback; TLS terminates in Tailscale. No TLS terminator in front of
+  the app to misconfigure.
+- Host allowlist, `Origin` check on the WebSocket handshake, CSP, HSTS,
+  `nosniff`, `X-Frame-Options: DENY`.
+- No query parameter runs a command; `?dir=` only selects a session directory.
+- 8 sessions max, 5 failed logins per address per 15 minutes, sessions in
+  memory only (a restart logs everyone out).
+- Rotate with `bin/auth && bin/deploy`. Turn the public path off with
+  `sudo tailscale funnel --set-path /term off`.
 
 ## Known limits
 

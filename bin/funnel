@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+port="${TERM_GUI_PORT:-7795}"
+path="${TERM_GUI_BASE:-/term}"
+path="${path%/}"
+
+exec sudo tailscale funnel --bg --set-path "$path" --yes "$port"

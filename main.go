@@ -176,6 +176,7 @@ func secure(next http.Handler, extraHosts []string) http.Handler {
 			}
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
