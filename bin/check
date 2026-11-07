@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [ ! -d web/node_modules ]; then
+  npm --prefix web ci --no-audit --no-fund
+fi
+
+fmt="$(gofmt -l .)"
+if [ -n "$fmt" ]; then
+  printf '%s\n' "$fmt" | sed 's/^/gofmt: /' >&2
+  echo "check: Go formatting failed" >&2
+  exit 1
+fi
+
+npm --prefix web run typecheck
+npm --prefix web test
+npm --prefix web run build
+
+go vet ./...
+go test ./...
+mkdir -p .cache
+go build -o .cache/term-gui .
