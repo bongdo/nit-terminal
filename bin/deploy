@@ -7,7 +7,7 @@ base="${TERM_GUI_BASE:-/term}"
 base="${base%/}"
 root="${TERM_GUI_ROOT:-$HOME}"
 host="${TERM_GUI_PUBLIC_HOST:-frankfurt.tailf358cb.ts.net}"
-pero="${TERM_GUI_PERO_URL:-/pero/}"
+pero="${TERM_GUI_PERO_URL:-https://$host/pero/}"
 auth_env="${TERM_GUI_AUTH_ENV:-$HOME/.config/term-gui/auth.env}"
 run_dir="$PWD/.cache"
 bin="$run_dir/term-gui"
@@ -62,9 +62,10 @@ code=""
 for _ in $(seq 1 40); do
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$base/" || true)"
   if [ "$code" = 303 ] || [ "$code" = 200 ]; then
+    https="${TERM_GUI_FUNNEL_HTTPS:-8443}"
     echo "deploy: local  http://127.0.0.1:$port$base/"
-    echo "deploy: public https://$host$base/"
-    if ! tailscale funnel status 2>/dev/null | grep -q "$base"; then
+    echo "deploy: public https://$host:$https$base/"
+    if ! tailscale funnel status 2>/dev/null | grep -q ":$https"; then
       echo "deploy: enable public access with: bin/funnel" >&2
     fi
     exit 0

@@ -3,7 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 port="${TERM_GUI_PORT:-7795}"
-path="${TERM_GUI_BASE:-/term}"
-path="${path%/}"
+https="${TERM_GUI_FUNNEL_HTTPS:-8443}"
 
-exec sudo tailscale funnel --bg --set-path "$path" --yes "$port"
+if [ "${1:-}" = "off" ]; then
+  exec sudo tailscale funnel --https="$https" off
+fi
+
+exec sudo tailscale funnel --bg --https="$https" "http://127.0.0.1:$port"

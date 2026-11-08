@@ -17,21 +17,22 @@ Open <http://127.0.0.1:7795/term/>. Health is `GET /term/api/health`.
 ```sh
 bin/auth                # writes TERM_GUI_PASSWORD to ~/.config/term-gui/auth.env
 bin/deploy              # build, restart on 127.0.0.1:7795, health check
-bin/funnel              # public https://<host>/term/ behind the password
-bin/serve               # tailnet-only https://<host>:8443/term/
+bin/funnel              # public  https://<host>:8443/term/ behind the password
+bin/serve               # private https://<host>:8443/term/ (tailnet only)
 ```
+
+`bin/funnel` and `bin/serve` both use their own HTTPS port. Do not mount the
+terminal as a path on the funneled `:443`: Tailscale strips the `--set-path`
+prefix before proxying, so the app would receive `/` instead of `/term/` and
+answer 404. A root mount on a dedicated port preserves the path, which is what
+`base: "./"` and `apiBase()` in the SPA expect.
 
 `bin/deploy` refuses to start without a password file. Every request without a
 valid `term_session` cookie gets the login page; `/api/*` gets `401`. The cookie
 is `HttpOnly`, `SameSite=Strict`, 7 days, `Path=/term/`, and `Secure` when the
 request arrives with `X-Forwarded-Proto: https`. Five wrong passwords from one
-address block it for 15 minutes.
-
-Both `bin/funnel` and `bin/serve` can be enabled at once. Funnel shares the
-`:443` path list with `nit-gui` and `pero-gui`, so every mapped path there is
-public; `bin/serve` keeps a private fallback on `:8443`. Set an absolute
-`TERM_GUI_PERO_URL` when the terminal is reached on a different origin than the
-editor.
+address block it for 15 minutes. Set `TERM_GUI_PERO_URL` when the editor lives
+on a different origin; `bin/deploy` defaults it to `https://<host>/pero/`.
 
 ## URL contract
 
