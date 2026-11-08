@@ -24,7 +24,7 @@ import (
 	"term-gui/internal/ws"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 //go:embed all:web/dist
 var webAssets embed.FS
@@ -91,10 +91,10 @@ func main() {
 	gate := auth.New(os.Getenv("TERM_GUI_PASSWORD"), basePath)
 	server := &http.Server{
 		Addr: *addrFlag,
-		Handler: secure(
+		Handler: logRequests(secure(
 			gate.Wrap(withBasePath(basePath, mux)),
 			extraHosts,
-		),
+		)),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -162,13 +162,23 @@ func spaHandler() http.Handler {
 	})
 }
 
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("%s %s host=%q forwarded=%q proto=%q origin=%q", r.Method, r.URL.Path, r.Host,
+			r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Proto"), r.Header.Get("Origin"))
+		next.ServeHTTP(w, r)
+	})
+}
+
 func secure(next http.Handler, extraHosts []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !allowedHost(requestHost(r), extraHosts) {
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return
 		}
-		if !originAllowed(r, extraHosts) {
+		if !originAllowed(r, extraHosts) && !proxiedRequest(r, extraHosts) {
+			log.Printf("origin rejected host=%q forwarded=%q proto=%q origin=%q", r.Host,
+				r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Proto"), r.Header.Get("Origin"))
 			http.Error(w, "forbidden origin", http.StatusForbidden)
 			return
 		}
@@ -217,6 +227,13 @@ func requestHost(r *http.Request) string {
 		return host
 	}
 	return r.Host
+}
+
+func proxiedRequest(r *http.Request, extra []string) bool {
+	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		return false
+	}
+	return allowedHost(requestHost(r), extra)
 }
 
 func originAllowed(r *http.Request, extra []string) bool {
