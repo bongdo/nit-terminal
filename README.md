@@ -44,6 +44,23 @@ on a different origin; `bin/deploy` defaults it to `https://<host>/pero/`.
 
 The SPA strips the query with `history.replaceState` after reading it.
 
+## UI and keys
+
+The terminal fills the whole page. A floating button in the bottom-right corner
+opens session state, cwd, font size, theme and reconnect. There are no permanent
+top or bottom bars.
+
+| Key | Effect |
+| --- | --- |
+| Ctrl/Cmd+V | paste into the terminal |
+| Ctrl+Shift+V | browser-native paste fallback |
+| Ctrl/Cmd+, | toggle settings |
+| middle click | paste |
+| select | copy, with a one-line toast |
+
+Ctrl+V is intercepted before xterm.js sees it, so it pastes instead of sending
+`^V` to the shell. Shell quoted-insert is not available.
+
 Sessions are named `tg-<12 hex of sha256(dir)>`. Explicit names must match
 `^[A-Za-z0-9_-]{1,40}$`. `dir` must be an absolute path inside
 `TERM_GUI_ALLOWED_ROOTS`, and must exist; anything else is a 400 before a PTY is
@@ -95,16 +112,23 @@ later keystrokes and clipboard paste are binary frames; PTY output is binary
 frames; `{"type":"hello",...}` is the only other text frame. Origin is checked
 against Host on the handshake, not only at the HTTP layer.
 
-## Kitty graphics subset
+## Kitty graphics
 
-`ESC _ G ... ESC \` with `f=100` (base64 PNG) and a single chunk. The image is
-drawn as an `<img>` overlay at the cursor cell, anchored to its buffer line and
-moved on scroll. Unknown keys, chunked `m=1`, transmit-only `a=t`, and non-PNG
-formats are consumed and ignored, never printed as text. No animation, no
-Unicode placeholders, no z-index negotiation, at most 32 images per connection.
+`ESC _ G ... ESC \` with PNG (`f=100`) or raw RGB/RGBA (`f=24`, `f=32`),
+including chunked transmission (`m=1`/`m=0`), transmit-then-place (`a=t`,
+`a=p`) and delete (`a=d`). Images are drawn as `<img>` overlays at the cursor
+cell, anchored to their buffer line and moved on scroll. Unknown keys and
+unsupported actions are consumed, never printed as text. No animation, no
+Unicode placeholders, no z-index negotiation; at most 32 images and 32 MB of
+pending data per connection.
 
-xterm.js 6 has no APC hook on `terminal.parser`, so the sequence is parsed in the
-WebSocket-to-xterm write path (`web/src/lib/kitty.ts`) before xterm sees it.
+xterm.js 6 has no APC hook on `terminal.parser`, so sequences are parsed in the
+WebSocket-to-xterm write path (`web/src/lib/kitty.ts`) before xterm sees them.
+DCS `tmux;` passthrough is unwrapped too.
+
+Through tmux, use an emitter that wraps the sequence, for example
+`chafa --format kitty --passthrough tmux`. Without tmux, raw emitters such as
+`chafa` and `kitty icat` work directly.
 
 ## Security
 
@@ -126,10 +150,10 @@ trust as SSH on the host, so keep the password private and rotate it if it leaks
 ## Known limits
 
 - tmux 3.6 swallows raw APC sequences. Kitty images work through a plain PTY
-  (tmux missing), and through tmux only when the emitting program wraps the
-  sequence in tmux DCS passthrough
-  (`ESC Ptmux; ESC ESC _ G ... ESC ESC \ ESC \`). `kitty icat` and similar raw
-  emitters will not display images inside a tmux-backed session.
+  (tmux missing), and through tmux when the emitting program wraps the sequence
+  in tmux DCS passthrough (for example `chafa --passthrough tmux`); tmux
+  unwraps the DCS before it reaches the browser. Raw emitters such as
+  `kitty icat` without a passthrough flag will not display inside tmux.
 - The session cap counts attached PTYs; background tmux sessions are listed but
   are not counted and are never garbage collected. Kill them with
   `tmux -L term-gui kill-session -t <name>`.
@@ -138,6 +162,7 @@ trust as SSH on the host, so keep the password private and rotate it if it leaks
 - WebSocket Origin must equal Host. A proxy that rewrites Host breaks the
   handshake.
 - Path links are not checked on disk; the editor decides whether a path exists.
-- Kitty rendering, copy-on-select, OSC 52, middle-click paste, and link opening
-  were not exercised in a real browser here; they are covered by unit tests and
-  raw WebSocket traces only.
+- Headless Chromium smoke tests cover Ctrl+V, `chafa` through tmux, raw
+  `f=32`/`f=100` images, theme switching and the settings popover.
+  Copy-on-select, OSC 52, middle-click paste and link opening are still covered
+  by unit tests and raw WebSocket traces only.

@@ -22,12 +22,14 @@ the terminal's job is speed, themes, selection, copying and image output.
   missing.
 - One session per workspace directory, named deterministically from the
   absolute path. Explicit `?session=` selects another.
-- Copy on select. OSC 52 copy from remote programs. Middle-click paste.
-- Light/dark and a few palettes using the `pero` colour tokens; font size and
-  palette persist in `localStorage`.
-- Kitty graphics protocol, minimal subset: `\x1b_G` with `f=100` (base64 PNG)
-  drawn at the cursor cell. No animation, no unicode placeholders, no z-index
-  negotiation. Document the limits.
+- Copy on select. Ctrl/Cmd+V paste. OSC 52 copy from remote programs.
+  Middle-click paste.
+- A flat list of terminal theme presets, plus font size, persisted in
+  `localStorage`.
+- Kitty graphics protocol: PNG (`f=100`) and raw RGB/RGBA (`f=24`, `f=32`),
+  chunked transmission, transmit/place/delete, drawn at the cursor cell. No
+  animation, no unicode placeholders, no z-index negotiation. Document the
+  limits.
 - Ctrl/Cmd+click on an absolute path or `file:line` in the output opens
   `<peroURL>?open=<path>&line=<n>` in a new tab. `peroURL` comes from
   `TERM_GUI_PERO_URL`, default `/pero/`. Resolve relative paths against the
@@ -72,14 +74,15 @@ Anything else is a 400 before a PTY is spawned.
 - Vite + React + TypeScript + Tailwind v4, same conventions as `pero-gui/web`.
 - `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`,
   `@xterm/addon-unicode11`.
-- Layout: a tab strip of sessions, the terminal fills the rest, a status line
-  with session name, cwd and connection state.
+- Layout: the terminal fills the whole page. No permanent top or bottom bars;
+  a floating settings button and Ctrl/Cmd+, open a popover with connection
+  state, cwd, font size, theme and reconnect.
 - Selection → `navigator.clipboard.writeText` on selection change, debounced;
-  a one-line toast confirms. Do not steal Ctrl/Cmd+C.
-- Kitty handler: register an APC handler on `terminal.parser`, decode the
-  base64 payload, draw an `<img>` overlay at the cursor cell, scroll-lock the
-  row so it does not stick to static content. Anything unsupported is ignored,
-  never printed as garbage.
+  a one-line toast confirms. Do not steal Ctrl/Cmd+C. Ctrl/Cmd+V pastes.
+- Kitty handler: parse APC sequences in the WebSocket-to-xterm write path,
+  decode the payload, draw an `<img>` overlay at the cursor cell, scroll-lock
+  the row so it does not stick to static content. Anything unsupported is
+  ignored, never printed as garbage.
 - Speed: binary frames, no per-key JSON, one `requestAnimationFrame` flush per
   tick, `fit` only on resize and font change.
 

@@ -5,7 +5,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
-import { KittyStream, type KittyImage, type KittyPart } from "../lib/kitty";
+import { KittyStream, type KittyImage, type KittyPart, type KittyPixels } from "../lib/kitty";
 import { findPaths, peroHref, resolvePath } from "../lib/links";
 import { themeFor, type Prefs } from "../lib/theme";
 import { wsURL, type Target } from "../lib/url";
@@ -30,6 +30,27 @@ type Props = {
   onCwd: (cwd: string) => void;
   onToast: (message: string) => void;
 };
+
+function pixelsToSrc(pixels: KittyPixels): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = pixels.width;
+  canvas.height = pixels.height;
+  const context = canvas.getContext("2d");
+  if (!context) return "";
+  const image = context.createImageData(pixels.width, pixels.height);
+  if (pixels.channels === 4) {
+    image.data.set(pixels.bytes);
+  } else {
+    for (let source = 0, target = 0; source + 2 < pixels.bytes.length; source += 3, target += 4) {
+      image.data[target] = pixels.bytes[source];
+      image.data[target + 1] = pixels.bytes[source + 1];
+      image.data[target + 2] = pixels.bytes[source + 2];
+      image.data[target + 3] = 255;
+    }
+  }
+  context.putImageData(image, 0, 0);
+  return canvas.toDataURL("image/png");
+}
 
 export default function TerminalView({ target, prefs, reconnectToken, onHello, onState, onCwd, onToast }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -67,7 +88,23 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       void 0;
     }
 
-    type Overlay = { el: HTMLImageElement; line: number; column: number; cols?: number; rows?: number };
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") return true;
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        event.stopPropagation();
+        navigator.clipboard
+          ?.readText()
+          .then((text) => {
+            if (text) term.paste(text);
+          })
+          .catch(() => handlersRef.current.onToast("Clipboard blocked; use Ctrl+Shift+V"));
+        return false;
+      }
+      return true;
+    });
+
+    type Overlay = { el: HTMLImageElement; line: number; column: number; cols?: number; rows?: number; id?: number };
     const overlays: Overlay[] = [];
 
     const position = () => {
@@ -90,14 +127,22 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       }
     };
 
-    const clearOverlays = () => {
-      for (const overlay of overlays) overlay.el.remove();
-      overlays.length = 0;
+    const removeOverlays = (id?: number) => {
+      for (let index = overlays.length - 1; index >= 0; index--) {
+        if (id === undefined || overlays[index].id === id) {
+          overlays[index].el.remove();
+          overlays.splice(index, 1);
+        }
+      }
     };
 
-    const draw = (image: KittyImage) => {
+    const clearOverlays = () => removeOverlays();
+
+    const draw = (image: KittyImage | KittyPixels) => {
+      const src = image.kind === "image" ? image.src : pixelsToSrc(image);
+      if (!src) return;
       const element = document.createElement("img");
-      element.src = image.src;
+      element.src = src;
       element.alt = "";
       element.style.position = "absolute";
       element.style.pointerEvents = "none";
@@ -109,24 +154,42 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
         column: term.buffer.active.cursorX,
         cols: image.cols,
         rows: image.rows,
+        id: image.id,
       });
       while (overlays.length > 32) overlays.shift()?.el.remove();
       position();
     };
 
-    const writeParts = (parts: KittyPart[], index: number) => {
-      if (index >= parts.length) return;
-      const part = parts[index];
+    const queue: KittyPart[] = [];
+    let writing = false;
+
+    const pump = () => {
+      if (writing) return;
+      const part = queue.shift();
+      if (part === undefined) return;
       if (typeof part === "string") {
         if (part === "") {
-          writeParts(parts, index + 1);
+          pump();
           return;
         }
-        term.write(part, () => writeParts(parts, index + 1));
+        writing = true;
+        term.write(part, () => {
+          writing = false;
+          pump();
+        });
         return;
       }
-      draw(part);
-      writeParts(parts, index + 1);
+      if (part.kind === "delete") {
+        removeOverlays(part.id);
+      } else {
+        draw(part);
+      }
+      pump();
+    };
+
+    const enqueue = (parts: KittyPart[]) => {
+      for (const part of parts) queue.push(part);
+      pump();
     };
 
     const scroll = term.onScroll(position);
@@ -285,8 +348,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
         }
         if (!(event.data instanceof ArrayBuffer)) return;
         const text = decoder.decode(new Uint8Array(event.data), { stream: true });
-        const result = kitty.push(text);
-        writeParts(result.parts, 0);
+        enqueue(kitty.push(text).parts);
       };
       ws.onclose = (event) => {
         handlersRef.current.onState("closed");
@@ -301,6 +363,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
           term.reset();
           decoder = new TextDecoder();
           kitty = new KittyStream();
+          queue.length = 0;
           clearOverlays();
           connect();
         }, delay);
@@ -342,6 +405,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       osc7.dispose();
       links.dispose();
       input.dispose();
+      queue.length = 0;
       clearOverlays();
       term.dispose();
       termRef.current = null;
