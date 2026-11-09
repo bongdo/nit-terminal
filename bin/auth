@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-dir="${TERM_GUI_CONFIG_DIR:-$HOME/.config/term-gui}"
-file="$dir/auth.env"
-
-umask 077
-mkdir -p "$dir"
-password="$(head -c 24 /dev/urandom | base64 | tr -d '\n=')"
-printf 'TERM_GUI_PASSWORD=%s\n' "$password" >"$file"
-chmod 600 "$file"
-
-echo "auth: wrote $file"
-echo "password: $password"
+shared="${NIT_GATE_AUTH_ENV:-$HOME/.config/nit-gui/auth.env}"
+exec "$(dirname "$0")/../../nit-gui/bin/auth" -out "$shared" "$@"

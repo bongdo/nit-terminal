@@ -1,14 +1,15 @@
 package auth
 
 import (
-	"crypto/rand"
-	"crypto/subtle"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"html/template"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +17,7 @@ import (
 )
 
 const (
-	CookieName    = "term_session"
+	CookieName    = "nit_gate"
 	sessionTTL    = 7 * 24 * time.Hour
 	maxFailures   = 5
 	blockFor      = 15 * time.Minute
@@ -30,10 +31,10 @@ type attempt struct {
 }
 
 type Gate struct {
-	password string
+	hash     string
+	secret   []byte
 	base     string
 	mu       sync.Mutex
-	sessions map[string]time.Time
 	attempts map[string]*attempt
 	now      func() time.Time
 }
@@ -92,17 +93,24 @@ button:disabled { cursor:not-allowed; opacity:.55; }
 </html>`))
 
 func New(password, base string) *Gate {
+	hash := strings.TrimSpace(os.Getenv("NIT_GATE_PASSWORD_HASH"))
+	if hash == "" {
+		hash = strings.TrimSpace(os.Getenv("TERM_GUI_PASSWORD_HASH"))
+	}
+	if hash == "" && password != "" {
+		hash, _ = hashPassword(password)
+	}
 	return &Gate{
-		password: password,
+		hash:     hash,
+		secret:   gateSecret(hash),
 		base:     strings.TrimRight(strings.TrimSpace(base), "/"),
-		sessions: map[string]time.Time{},
 		attempts: map[string]*attempt{},
 		now:      time.Now,
 	}
 }
 
 func (a *Gate) Wrap(next http.Handler) http.Handler {
-	if a.password == "" {
+	if a.hash == "" {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +165,7 @@ func (a *Gate) handleLogin(w http.ResponseWriter, r *http.Request) {
 		a.render(w, http.StatusTooManyRequests, next, blockMessage(retry), true)
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(r.FormValue("password")), []byte(a.password)) == 1 {
+	if verifyPassword(a.hash, r.FormValue("password")) {
 		a.clear(ip)
 		a.startSession(w, r)
 		http.Redirect(w, r, next, http.StatusSeeOther)
@@ -178,20 +186,7 @@ func (a *Gate) handleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if cookie, err := r.Cookie(CookieName); err == nil {
-		a.mu.Lock()
-		delete(a.sessions, cookie.Value)
-		a.mu.Unlock()
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    "",
-		Path:     a.cookiePath(),
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   isHTTPS(r),
-		SameSite: http.SameSiteStrictMode,
-	})
+	a.setSessionCookie(w, r, "", -1)
 	http.Redirect(w, r, a.authPath(), http.StatusSeeOther)
 }
 
@@ -208,40 +203,22 @@ func (a *Gate) authenticated(r *http.Request) bool {
 	if err != nil || cookie.Value == "" {
 		return false
 	}
-	now := a.now()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	expires, ok := a.sessions[cookie.Value]
-	if !ok {
-		return false
-	}
-	if now.After(expires) {
-		delete(a.sessions, cookie.Value)
-		return false
-	}
-	return true
+	return validSessionToken(a.secret, cookie.Value, a.now())
 }
 
 func (a *Gate) startSession(w http.ResponseWriter, r *http.Request) {
-	token := make([]byte, 32)
-	if _, err := rand.Read(token); err != nil {
-		http.Error(w, "could not start session", http.StatusInternalServerError)
-		return
-	}
-	value := base64.RawURLEncoding.EncodeToString(token)
-	now := a.now()
-	a.mu.Lock()
-	a.prune(now)
-	a.sessions[value] = now.Add(sessionTTL)
-	a.mu.Unlock()
+	a.setSessionCookie(w, r, newSessionToken(a.secret, a.now()), int(sessionTTL.Seconds()))
+}
+
+func (a *Gate) setSessionCookie(w http.ResponseWriter, r *http.Request, value string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    value,
-		Path:     a.cookiePath(),
-		MaxAge:   int(sessionTTL.Seconds()),
+		Path:     "/",
+		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   isHTTPS(r),
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
@@ -286,11 +263,6 @@ func (a *Gate) prune(now time.Time) {
 			delete(a.attempts, ip)
 		}
 	}
-	for token, expires := range a.sessions {
-		if now.After(expires) {
-			delete(a.sessions, token)
-		}
-	}
 }
 
 func (a *Gate) trimBase(path string) string {
@@ -320,11 +292,34 @@ func (a *Gate) authPath() string {
 	return a.base + "/auth"
 }
 
-func (a *Gate) cookiePath() string {
-	if a.base == "" {
-		return "/"
+func gateSecret(credential string) []byte {
+	sum := sha256.Sum256([]byte("nit-gate-session-v1\x00" + credential))
+	return sum[:]
+}
+
+func newSessionToken(secret []byte, now time.Time) string {
+	payload := "v1." + strconv.FormatInt(now.Add(sessionTTL).Unix(), 10)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(payload))
+	return payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func validSessionToken(secret []byte, value string, now time.Time) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 || parts[0] != "v1" {
+		return false
 	}
-	return a.base + "/"
+	expires, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || now.Unix() >= expires {
+		return false
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(parts[0] + "." + parts[1]))
+	return hmac.Equal(signature, mac.Sum(nil))
 }
 
 func (a *Gate) safeNext(raw string) string {

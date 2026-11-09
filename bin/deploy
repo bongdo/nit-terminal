@@ -8,19 +8,20 @@ base="${base%/}"
 root="${TERM_GUI_ROOT:-$HOME}"
 host="${TERM_GUI_PUBLIC_HOST:-frankfurt.tailf358cb.ts.net}"
 pero="${TERM_GUI_PERO_URL:-https://$host/pero/}"
-auth_env="${TERM_GUI_AUTH_ENV:-$HOME/.config/term-gui/auth.env}"
+auth_env="${TERM_GUI_AUTH_ENV:-$HOME/.config/nit-gui/auth.env}"
 run_dir="$PWD/.cache"
 bin="$run_dir/term-gui"
 
 if [ ! -r "$auth_env" ]; then
-  echo "deploy: no auth password; run bin/auth first" >&2
+  echo "deploy: no shared auth file; run ../nit-gui/bin/auth first" >&2
   exit 1
 fi
 set -a
 . "$auth_env"
 set +a
-if [ -z "${TERM_GUI_PASSWORD:-}" ]; then
-  echo "deploy: empty password in $auth_env" >&2
+hash="${NIT_GATE_PASSWORD_HASH:-${NIT_GUI_PASSWORD_HASH:-}}"
+if [ -z "$hash" ]; then
+  echo "deploy: no shared password hash in $auth_env; run ../nit-gui/bin/auth" >&2
   exit 1
 fi
 
@@ -55,7 +56,7 @@ TERM_GUI_ROOT="$root" \
   TERM_GUI_BASE_PATH="$base" \
   TERM_GUI_ALLOWED_HOSTS="$host" \
   TERM_GUI_PERO_URL="$pero" \
-  TERM_GUI_PASSWORD="$TERM_GUI_PASSWORD" \
+  NIT_GATE_PASSWORD_HASH="$hash" \
   setsid "$bin" --addr "127.0.0.1:$port" >"$run_dir/term-gui.log" 2>&1 </dev/null &
 
 code=""

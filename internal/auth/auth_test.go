@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testServer(t *testing.T, password string) *httptest.Server {
@@ -83,6 +84,9 @@ func TestLoginPreservesNextAndSetsCookie(t *testing.T) {
 	if len(cookies) == 0 || cookies[0].Name != CookieName || cookies[0].Value == "" {
 		t.Fatalf("cookies = %v", cookies)
 	}
+	if cookies[0].Path != "/" || cookies[0].SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie is not shared across apps: %v", cookies[0])
+	}
 
 	req, err := http.NewRequest(http.MethodGet, server.URL+"/term/", nil)
 	if err != nil {
@@ -142,6 +146,13 @@ func TestUnsafeNextIsIgnored(t *testing.T) {
 	defer resp.Body.Close()
 	if location := resp.Header.Get("Location"); location != "/term/" {
 		t.Fatalf("location = %q", location)
+	}
+}
+
+func TestSessionTokenSharedWithNitAndPero(t *testing.T) {
+	const token = "v1.2000000000.baa6SCK3SkFG1E7DKlobpA735zGYAznmh2p_U3wOIaQ"
+	if !validSessionToken(gateSecret("fixture"), token, time.Unix(1900000000, 0)) {
+		t.Fatal("shared session token rejected")
 	}
 }
 

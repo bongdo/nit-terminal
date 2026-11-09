@@ -15,7 +15,7 @@ Open <http://127.0.0.1:7795/term/>. Health is `GET /term/api/health`.
 ## Access
 
 ```sh
-bin/auth                # writes TERM_GUI_PASSWORD to ~/.config/term-gui/auth.env
+bin/auth                # rotates the shared ~/.config/nit-gui/auth.env
 bin/deploy              # build, restart on 127.0.0.1:7795, health check
 bin/funnel              # public  https://<host>:8443/term/ behind the password
 bin/serve               # private https://<host>:8443/term/ (tailnet only)
@@ -27,12 +27,14 @@ prefix before proxying, so the app would receive `/` instead of `/term/` and
 answer 404. A root mount on a dedicated port preserves the path, which is what
 `base: "./"` and `apiBase()` in the SPA expect.
 
-`bin/deploy` refuses to start without a password file. Every request without a
-valid `term_session` cookie gets the login page; `/api/*` gets `401`. The cookie
-is `HttpOnly`, `SameSite=Strict`, 7 days, `Path=/term/`, and `Secure` when the
-request arrives with `X-Forwarded-Proto: https`. Five wrong passwords from one
-address block it for 15 minutes. Set `TERM_GUI_PERO_URL` when the editor lives
-on a different origin; `bin/deploy` defaults it to `https://<host>/pero/`.
+`bin/deploy` refuses to start without the shared auth file. Every request
+without a valid `nit_gate` cookie gets the login page; `/api/*` gets `401`. The
+cookie is `HttpOnly`, `SameSite=Lax`, 7 days, `Path=/`, and `Secure` when the
+request arrives with `X-Forwarded-Proto: https`. It is an HMAC-signed expiry, so
+it survives restarts and is accepted by nit-gui and pero-gui on the same
+hostname. Five wrong passwords from one address block it for 15 minutes. Set
+`TERM_GUI_PERO_URL` when the editor lives on a different origin; `bin/deploy`
+defaults it to `https://<host>/pero/`.
 
 ## URL contract
 
@@ -91,7 +93,9 @@ Relative paths resolve against the last OSC 7 cwd, then the session directory.
 | `TERM_GUI_BASE_PATH` | `/term` | URL prefix. Set to empty to serve at `/`. |
 | `TERM_GUI_ALLOWED_HOSTS` | — | comma-separated extra Host values; loopback always allowed |
 | `TERM_GUI_ALLOWED_ROOTS` | `$HOME` | allowed `dir` roots, path-list separated |
-| `TERM_GUI_PASSWORD` | — | when set, one password and a 7 day `term_session` cookie |
+| `TERM_GUI_AUTH_ENV` | `~/.config/nit-gui/auth.env` | shared auth file |
+| `NIT_GATE_PASSWORD_HASH` | from the shared auth file | one password for nit-gui, pero-gui and term-gui |
+| `NIT_GATE_PASSWORD` | — | plain local-development password |
 | `TERM_GUI_MAX_SESSIONS` | `8` | cap on concurrently attached PTYs |
 | `TERM_GUI_PERO_URL` | `/pero/` | base of the editor link target |
 
@@ -142,8 +146,9 @@ trust as SSH on the host, so keep the password private and rotate it if it leaks
 - Host allowlist, `Origin` check on the WebSocket handshake, CSP, HSTS,
   `nosniff`, `X-Frame-Options: DENY`.
 - No query parameter runs a command; `?dir=` only selects a session directory.
-- 8 sessions max, 5 failed logins per address per 15 minutes, sessions in
-  memory only (a restart logs everyone out).
+- 8 sessions max, 5 failed logins per address per 15 minutes. The signed
+  `nit_gate` cookie survives restarts and is shared with nit-gui and pero-gui;
+  it expires after 7 days.
 - Rotate with `bin/auth && bin/deploy`. Turn the public path off with
   `sudo tailscale funnel --set-path /term off`.
 
