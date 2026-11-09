@@ -5,6 +5,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
+import { coverDimensions } from "../lib/fit";
 import { KittyStream, type KittyImage, type KittyPart, type KittyPixels } from "../lib/kitty";
 import { findPaths, peroHref, resolvePath } from "../lib/links";
 import { themeFor, type Prefs } from "../lib/theme";
@@ -55,7 +56,7 @@ function pixelsToSrc(pixels: KittyPixels): string {
 export default function TerminalView({ target, prefs, reconnectToken, onHello, onState, onCwd, onToast }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
+  const fitNowRef = useRef<() => void>(() => {});
   const sendResizeRef = useRef<() => void>(() => {});
   const metaRef = useRef<SessionHello | null>(null);
   const cwdRef = useRef("");
@@ -81,12 +82,21 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
     term.unicode.activeVersion = "11";
     term.open(host);
     termRef.current = term;
-    fitRef.current = fit;
-    try {
-      fit.fit();
-    } catch {
-      void 0;
-    }
+
+    const fitNow = () => {
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      if (!screen) return;
+      const box = screen.getBoundingClientRect();
+      const size = coverDimensions(host.clientWidth, host.clientHeight, box.width / term.cols, box.height / term.rows);
+      if (size && (size.cols !== term.cols || size.rows !== term.rows)) term.resize(size.cols, size.rows);
+    };
+    fitNowRef.current = fitNow;
+    fitNow();
 
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
@@ -317,11 +327,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       ws.onopen = () => {
         retry = 0;
         handlersRef.current.onState("open");
-        try {
-          fit.fit();
-        } catch {
-          void 0;
-        }
+        fitNow();
         sendResize();
         term.focus();
       };
@@ -377,11 +383,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
     const observer = new ResizeObserver(() => {
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
-        try {
-          fit.fit();
-        } catch {
-          void 0;
-        }
+        fitNow();
         sendResize();
         position();
       });
@@ -409,7 +411,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       clearOverlays();
       term.dispose();
       termRef.current = null;
-      fitRef.current = null;
+      fitNowRef.current = () => {};
       sendResizeRef.current = () => {};
     };
   }, [target, reconnectToken]);
@@ -419,11 +421,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
     if (!term) return;
     term.options.theme = themeFor(prefs);
     term.options.fontSize = prefs.fontSize;
-    try {
-      fitRef.current?.fit();
-    } catch {
-      void 0;
-    }
+    fitNowRef.current();
     sendResizeRef.current();
   }, [prefs]);
 

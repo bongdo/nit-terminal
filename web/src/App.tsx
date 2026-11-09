@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 
 import Settings from "./components/Settings";
 import TerminalView, { type ConnState, type SessionHello } from "./components/TerminalView";
-import { loadPrefs, savePrefs, themeIsDark, type Prefs, type ThemeId } from "./lib/theme";
+import TopGlow from "./components/TopGlow";
+import { loadPrefs, savePrefs, themeFor, themeIsDark, type Prefs, type ThemeId } from "./lib/theme";
 import { parseTarget, type Target } from "./lib/url";
 
 type Toast = { text: string; at: number };
@@ -39,17 +40,29 @@ export default function App() {
     setPrefs((current) => ({ ...current, fontSize: Math.min(28, Math.max(9, current.fontSize + delta)) }));
   };
 
+  const theme = themeFor(prefs);
+
   return (
-    <div className="relative h-dvh overflow-hidden bg-background text-foreground">
-      <TerminalView
-        target={target}
-        prefs={prefs}
-        reconnectToken={reconnectToken}
-        onHello={setHello}
-        onState={setState}
-        onCwd={setCwd}
-        onToast={showToast}
+    <div
+      className="relative flex h-dvh flex-col overflow-hidden text-foreground"
+      style={{ background: theme.background }}
+    >
+      <TopGlow
+        background={theme.background ?? "#141413"}
+        ink={theme.foreground ?? "#f1efe9"}
+        accent={theme.cursor ?? "#e07a4f"}
       />
+      <div className="relative min-h-0 flex-1">
+        <TerminalView
+          target={target}
+          prefs={prefs}
+          reconnectToken={reconnectToken}
+          onHello={setHello}
+          onState={setState}
+          onCwd={setCwd}
+          onToast={showToast}
+        />
+      </div>
       {toast ? (
         <div
           key={toast.at}
