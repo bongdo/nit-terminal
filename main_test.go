@@ -6,11 +6,10 @@ import (
 	"testing"
 )
 
-func testAccess(hosts, origins []string, trustProxy bool) *access {
+func testAccess(hosts, origins []string) *access {
 	a := &access{
-		hosts:      map[string]struct{}{"127.0.0.1": {}, "localhost": {}, "::1": {}},
-		origins:    map[string]struct{}{},
-		trustProxy: trustProxy,
+		hosts:   map[string]struct{}{"127.0.0.1": {}, "localhost": {}, "::1": {}},
+		origins: map[string]struct{}{},
 	}
 	for _, host := range hosts {
 		a.hosts[host] = struct{}{}
@@ -40,7 +39,6 @@ func TestOriginAllowedExact(t *testing.T) {
 	public := testAccess(
 		[]string{"frankfurt.tailf358cb.ts.net"},
 		[]string{"https://frankfurt.tailf358cb.ts.net:8443", "http://127.0.0.1:7795"},
-		true,
 	)
 
 	cases := []struct {
@@ -69,7 +67,7 @@ func TestOriginAllowedExact(t *testing.T) {
 }
 
 func TestHostsAllowedRejectsForwardedSpoof(t *testing.T) {
-	a := testAccess([]string{"frankfurt.tailf358cb.ts.net"}, []string{"https://frankfurt.tailf358cb.ts.net:8443"}, true)
+	a := testAccess([]string{"frankfurt.tailf358cb.ts.net"}, []string{"https://frankfurt.tailf358cb.ts.net:8443"})
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7795/term/", nil)
 	req.Host = "127.0.0.1:7795"
 	req.Header.Set("X-Forwarded-Host", "frankfurt.tailf358cb.ts.net:8443")
@@ -91,7 +89,7 @@ func TestSecureAcceptsProxyOrigin(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	a := testAccess([]string{"frankfurt.tailf358cb.ts.net"}, []string{"https://frankfurt.tailf358cb.ts.net"}, true)
+	a := testAccess([]string{"frankfurt.tailf358cb.ts.net"}, []string{"https://frankfurt.tailf358cb.ts.net"})
 	handler := secure(next, a)
 
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7795/term/auth", nil)

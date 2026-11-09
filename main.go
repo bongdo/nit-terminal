@@ -211,7 +211,6 @@ func logRequests(next http.Handler) http.Handler {
 type access struct {
 	hosts         map[string]struct{}
 	origins       map[string]struct{}
-	trustProxy    bool
 	allowNoOrigin bool
 }
 
@@ -219,7 +218,6 @@ func newAccess(extraHosts []string, addr string) (*access, error) {
 	a := &access{
 		hosts:         map[string]struct{}{"127.0.0.1": {}, "localhost": {}, "::1": {}},
 		origins:       map[string]struct{}{},
-		trustProxy:    envEnabled("TERM_GUI_TRUST_PROXY"),
 		allowNoOrigin: envEnabled("TERM_GUI_ALLOW_NO_ORIGIN"),
 	}
 	for _, host := range extraHosts {
