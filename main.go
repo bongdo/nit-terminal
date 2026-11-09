@@ -61,6 +61,7 @@ func main() {
 	if peroURL == "" {
 		peroURL = "/pero/"
 	}
+	dropURL := strings.TrimSpace(os.Getenv("TERM_GUI_DROP_URL"))
 
 	var extraHosts []string
 	for _, host := range strings.Split(os.Getenv("TERM_GUI_ALLOWED_HOSTS"), ",") {
@@ -93,14 +94,17 @@ func main() {
 	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"sessions": manager.List()})
 	})
-	mux.Handle("GET /api/ws", &ws.Handler{
+	handler := &ws.Handler{
 		Roots:         roots,
 		Manager:       manager,
 		Home:          home,
 		PeroURL:       peroURL,
+		DropURL:       dropURL,
 		OriginAllowed: access.originAllowed,
 		AllowNoOrigin: access.allowNoOrigin,
-	})
+	}
+	mux.Handle("GET /api/ws", handler)
+	mux.HandleFunc("GET /api/check", handler.Check)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 	})
@@ -123,12 +127,14 @@ func main() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdown)
+		manager.CloseAll()
 	}()
 
 	log.Printf("term-gui %s http://%s%s/ tmux=%v roots=%v insecure=%v", version, *addrFlag, basePath, manager.Tmux(), roots.Dirs(), insecure)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+	manager.CloseAll()
 }
 
 func envEnabled(key string) bool {

@@ -10,7 +10,13 @@ type Toast = { text: string; at: number };
 export default function App() {
   const [target] = useState<Target>(() => {
     const parsed = parseTarget(window.location.search);
-    window.history.replaceState(null, "", window.location.pathname);
+    if (!window.location.search) {
+      const saved = (window.history.state as { target?: Target } | null)?.target;
+      if (saved?.kind === "dir" && typeof saved.dir === "string") return saved;
+      if (saved?.kind === "session" && typeof saved.session === "string") return saved;
+      if (saved?.kind === "home") return saved;
+    }
+    window.history.replaceState({ target: parsed }, "", window.location.pathname);
     return parsed;
   });
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
@@ -31,6 +37,24 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const update = () => {
+      const next = `${Math.round(viewport.height)}px`;
+      if (document.documentElement.style.getPropertyValue("--app-height") !== next) {
+        document.documentElement.style.setProperty("--app-height", next);
+      }
+    };
+    update();
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+    };
+  }, []);
+
   const showToast = useCallback((message: string) => {
     setToast({ text: message, at: Date.now() });
   }, []);
@@ -43,8 +67,8 @@ export default function App() {
 
   return (
     <div
-      className="relative h-dvh overflow-hidden text-foreground"
-      style={{ background: theme.background }}
+      className="relative overflow-hidden text-foreground"
+      style={{ height: "var(--app-height, 100dvh)", background: theme.background }}
     >
       <TerminalView
         target={target}
@@ -63,7 +87,7 @@ export default function App() {
       {toast ? (
         <div
           key={toast.at}
-          className="pointer-events-none absolute bottom-5 left-1/2 z-10 -translate-x-1/2 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground shadow-lg"
+          className="toast-root pointer-events-none absolute bottom-5 left-1/2 z-10 -translate-x-1/2 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground shadow-lg"
           role="status"
         >
           {toast.text}

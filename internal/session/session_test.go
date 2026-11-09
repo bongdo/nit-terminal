@@ -15,11 +15,10 @@ func TestPtyOracle(t *testing.T) {
 	manager.tmux = false
 	manager.shell = func() []string { return []string{"/bin/sh", "-c", "printf hello"} }
 
-	sess, err := manager.Attach("oracle", dir, 24, 80)
+	sess, client, err := manager.Attach("oracle", dir, 24, 80)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := sess.Subscribe()
 	defer manager.Detach(sess, client)
 
 	var out bytes.Buffer
@@ -77,11 +76,10 @@ func TestPtyEnvScrubsSecrets(t *testing.T) {
 	manager.tmux = false
 	manager.shell = func() []string { return []string{"/bin/sh", "-c", "env"} }
 
-	sess, err := manager.Attach("env", dir, 24, 80)
+	sess, client, err := manager.Attach("env", dir, 24, 80)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := sess.Subscribe()
 	defer manager.Detach(sess, client)
 
 	var out bytes.Buffer
@@ -97,6 +95,136 @@ func TestPtyEnvScrubsSecrets(t *testing.T) {
 			return
 		case <-deadline:
 			t.Fatalf("PTY did not finish: %q", out.String())
+		}
+	}
+}
+
+func TestAttachRejectsDifferentDirForSameName(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	manager := New(first, 1)
+	manager.tmux = false
+	manager.shell = func() []string { return []string{"/bin/sh", "-c", "sleep 5"} }
+
+	sess, client, err := manager.Attach("same", first, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Detach(sess, client)
+
+	if _, _, err := manager.Attach("same", second, 24, 80); !errors.Is(err, ErrDirMismatch) {
+		t.Fatalf("err = %v, want ErrDirMismatch", err)
+	}
+}
+
+func TestSlowClientDoesNotLoseSession(t *testing.T) {
+	dir := t.TempDir()
+	manager := New(dir, 1)
+	manager.tmux = false
+	manager.shell = func() []string { return []string{"/bin/sh", "-c", "seq 1 500000"} }
+
+	sess, client, err := manager.Attach("slow", dir, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Detach(sess, client)
+
+	time.Sleep(200 * time.Millisecond)
+	if got := sess.clientCount(); got != 1 {
+		t.Fatalf("client count = %d, want 1", got)
+	}
+	select {
+	case <-sess.Done():
+		t.Fatal("session ended before the client drained output")
+	default:
+	}
+
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case <-client.C:
+		case <-sess.Done():
+			return
+		case <-deadline:
+			t.Fatal("session did not finish after draining")
+		}
+	}
+}
+
+func TestPausedClientDoesNotRead(t *testing.T) {
+	dir := t.TempDir()
+	manager := New(dir, 1)
+	manager.tmux = false
+	manager.shell = func() []string { return []string{"/bin/sh", "-c", "sleep 0.2; printf hello"} }
+
+	sess, client, err := manager.Attach("paused", dir, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Detach(sess, client)
+	sess.SetPaused(client, true)
+
+	select {
+	case data := <-client.C:
+		t.Fatalf("read %q while paused", data)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	sess.SetPaused(client, false)
+	select {
+	case data := <-client.C:
+		if !bytes.Contains(data, []byte("hello")) {
+			t.Fatalf("output = %q", data)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no output after resume")
+	}
+}
+
+func TestCloseAllStopsSessions(t *testing.T) {
+	dir := t.TempDir()
+	manager := New(dir, 1)
+	manager.tmux = false
+	manager.shell = func() []string { return []string{"/bin/sh", "-c", "sleep 30"} }
+
+	sess, client, err := manager.Attach("close", dir, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Detach(sess, client)
+	manager.CloseAll()
+
+	select {
+	case <-sess.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("session survived CloseAll")
+	}
+}
+
+func TestPausedClientDisconnectDoesNotStallOthers(t *testing.T) {
+	dir := t.TempDir()
+	manager := New(dir, 1)
+	manager.tmux = false
+	manager.shell = func() []string { return []string{"/bin/sh", "-c", "sleep 0.2; printf hello"} }
+
+	sess, first, err := manager.Attach("shared", dir, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := sess.subscribe()
+	defer manager.Detach(sess, second)
+	sess.SetPaused(first, true)
+	manager.Detach(sess, first)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case data := <-second.C:
+			if bytes.Contains(data, []byte("hello")) {
+				return
+			}
+		case <-deadline:
+			t.Fatal("session stayed paused after the slow client left")
 		}
 	}
 }

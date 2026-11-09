@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -12,7 +13,28 @@ import (
 	"term-gui/internal/pty"
 )
 
-var ErrTooMany = errors.New("too many sessions")
+var (
+	ErrTooMany     = errors.New("too many sessions; close another terminal tab")
+	ErrDirMismatch = errors.New("session name is already used for another directory")
+)
+
+const tmuxConfig = `set-option -g destroy-unattached off
+set-option -g allow-passthrough on
+set-option -g status off
+set-option -g history-limit 10000
+set-option -g escape-time 0
+set-option -g set-clipboard on
+set-option -g mouse on
+set-environment -g COLORTERM truecolor
+bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel
+bind-key -n F11 copy-mode -u
+bind-key -n F12 copy-mode -e
+bind-key -T copy-mode F11 send-keys -X page-up
+bind-key -T copy-mode F12 send-keys -X page-down
+bind-key -T copy-mode-vi F11 send-keys -X page-up
+bind-key -T copy-mode-vi F12 send-keys -X page-down
+`
 
 type Client struct {
 	C    chan []byte
@@ -32,26 +54,51 @@ type Info struct {
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	home     string
-	max      int
-	tmux     bool
-	shell    func() []string
-	sessions map[string]*Session
+	mu         sync.Mutex
+	home       string
+	max        int
+	tmux       bool
+	tmuxConfig string
+	shell      func() []string
+	sessions   map[string]*Session
 }
 
 func New(home string, max int) *Manager {
 	if max < 1 {
 		max = 1
 	}
-	_, err := exec.LookPath("tmux")
-	return &Manager{
-		home:     home,
-		max:      max,
-		tmux:     err == nil,
-		shell:    defaultShell,
-		sessions: map[string]*Session{},
+	config, err := writeTmuxConfig()
+	if err != nil {
+		log.Printf("tmux config: %v", err)
+		config = ""
 	}
+	_, err = exec.LookPath("tmux")
+	return &Manager{
+		home:       home,
+		max:        max,
+		tmux:       err == nil && config != "",
+		tmuxConfig: config,
+		shell:      defaultShell,
+		sessions:   map[string]*Session{},
+	}
+}
+
+func writeTmuxConfig() (string, error) {
+	file, err := os.CreateTemp("", "term-gui-tmux-*.conf")
+	if err != nil {
+		return "", err
+	}
+	name := file.Name()
+	if _, err := file.WriteString(tmuxConfig); err != nil {
+		_ = file.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
 }
 
 func defaultShell() []string {
@@ -66,10 +113,13 @@ func (m *Manager) Home() string { return m.home }
 
 func (m *Manager) Tmux() bool { return m.tmux }
 
-func (m *Manager) Capacity(name string) error {
+func (m *Manager) Validate(name, dir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.sessions[name]; ok {
+	if s, ok := m.sessions[name]; ok {
+		if s.Dir != dir {
+			return ErrDirMismatch
+		}
 		return nil
 	}
 	if len(m.sessions) >= m.max {
@@ -78,34 +128,43 @@ func (m *Manager) Capacity(name string) error {
 	return nil
 }
 
-func (m *Manager) Attach(name, dir string, rows, cols uint16) (*Session, error) {
+func (m *Manager) Attach(name, dir string, rows, cols uint16) (*Session, *Client, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s, ok := m.sessions[name]; ok {
-		return s, nil
+		if s.Dir != dir {
+			return nil, nil, ErrDirMismatch
+		}
+		return s, s.subscribe(), nil
 	}
 	if len(m.sessions) >= m.max {
-		return nil, ErrTooMany
+		return nil, nil, ErrTooMany
 	}
-	s, err := start(name, dir, m.tmux, m.shell, rows, cols)
+	s, err := start(name, dir, m.tmux, m.tmuxConfig, m.shell, rows, cols)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	client := s.subscribe()
 	m.sessions[name] = s
 	go s.pump(func() { m.forget(s) })
-	return s, nil
+	return s, client, nil
 }
 
 func (m *Manager) Detach(s *Session, c *Client) {
-	if !s.unsubscribe(c) {
-		return
-	}
 	m.mu.Lock()
-	if m.sessions[s.Name] == s {
+	s.mu.Lock()
+	delete(s.clients, c)
+	empty := len(s.clients) == 0
+	if empty && m.sessions[s.Name] == s {
 		delete(m.sessions, s.Name)
 	}
+	s.mu.Unlock()
+	s.SetPaused(c, false)
+	c.kill()
+	if empty {
+		s.Close()
+	}
 	m.mu.Unlock()
-	s.Close()
 }
 
 func (m *Manager) forget(s *Session) {
@@ -114,6 +173,19 @@ func (m *Manager) forget(s *Session) {
 		delete(m.sessions, s.Name)
 	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) CloseAll() {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.sessions = map[string]*Session{}
+	m.mu.Unlock()
+	for _, s := range sessions {
+		s.Close()
+	}
 }
 
 func (m *Manager) List() []Info {
@@ -137,14 +209,17 @@ func (m *Manager) List() []Info {
 	return infos
 }
 
-func tmuxCommand(args ...string) *exec.Cmd {
-	cmd := exec.Command("tmux", append([]string{"-L", "term-gui", "-f", "/dev/null"}, args...)...)
+func tmuxCommand(conf string, args ...string) *exec.Cmd {
+	if conf == "" {
+		conf = "/dev/null"
+	}
+	cmd := exec.Command("tmux", append([]string{"-L", "term-gui", "-f", conf}, args...)...)
 	cmd.Env = sessionEnv()
 	return cmd
 }
 
 func tmuxSessions() []Info {
-	out, err := tmuxCommand("list-sessions", "-F", "#{session_name}\t#{session_path}").Output()
+	out, err := tmuxCommand("", "list-sessions", "-F", "#{session_name}\t#{session_path}").Output()
 	if err != nil {
 		return nil
 	}
@@ -159,35 +234,64 @@ func tmuxSessions() []Info {
 	return infos
 }
 
-func start(name, dir string, tmux bool, shell func() []string, rows, cols uint16) (*Session, error) {
+func start(name, dir string, tmux bool, conf string, shell func() []string, rows, cols uint16) (*Session, error) {
 	argv := shell()
 	if tmux {
-		if err := tmuxCommand("set-option", "-g", "destroy-unattached", "on").Run(); err != nil {
-			log.Printf("tmux destroy-unattached unavailable: %v", err)
-			tmux = false
-		} else {
-			tmuxScrubEnv()
-			_ = tmuxCommand("set-option", "-g", "allow-passthrough", "on", ";", "set-option", "-g", "status", "off").Run()
+		if tmuxRunning(conf) {
+			if err := tmuxCommand(conf, "source-file", conf).Run(); err != nil {
+				log.Printf("tmux source-file: %v", err)
+				tmux = false
+			}
 		}
-	}
-	if tmux {
-		argv = []string{"tmux", "-L", "term-gui", "-f", "/dev/null", "new-session", "-A", "-s", name, "-c", dir}
+		if tmux {
+			_ = tmuxCommand(conf, "set-option", "-g", "destroy-unattached", "off").Run()
+			tmuxScrubEnv(conf)
+			if err := tmuxCommand(conf, "has-session", "-t", "="+name).Run(); err != nil {
+				if out, err := tmuxCommand(conf, "new-session", "-d", "-s", name, "-c", dir).CombinedOutput(); err != nil {
+					log.Printf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
+					tmux = false
+				}
+			}
+		}
+		if tmux {
+			argv = []string{"tmux", "-L", "term-gui", "-f", conf, "attach-session", "-t", "=" + name}
+		}
 	}
 	env := sessionEnv()
 	env = setEnv(env, "TERM", "xterm-256color")
 	env = setEnv(env, "COLORTERM", "truecolor")
 	proc, err := pty.Spawn(dir, argv, env, rows, cols)
+	if err != nil && tmux {
+		_ = tmuxCommand(conf, "kill-session", "-t", "="+name).Run()
+		tmux = false
+		argv = shell()
+		proc, err = pty.Spawn(dir, argv, env, rows, cols)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return &Session{
+	if tmux {
+		if err := tmuxCommand(conf, "set-option", "-g", "destroy-unattached", "on").Run(); err != nil {
+			log.Printf("tmux destroy-unattached: %v", err)
+		}
+	}
+	s := &Session{
 		Name:    name,
 		Dir:     dir,
 		Tmux:    tmux,
 		proc:    proc,
 		clients: map[*Client]struct{}{},
+		paused:  map[*Client]struct{}{},
+		in:      make(chan []byte, 256),
 		done:    make(chan struct{}),
-	}, nil
+	}
+	s.flowCond = sync.NewCond(&s.flowMu)
+	go s.writeLoop()
+	return s, nil
+}
+
+func tmuxRunning(conf string) bool {
+	return tmuxCommand(conf, "list-sessions").Run() == nil
 }
 
 type Session struct {
@@ -201,24 +305,23 @@ type Session struct {
 	clients map[*Client]struct{}
 	closed  bool
 
+	flowMu     sync.Mutex
+	flowCond   *sync.Cond
+	paused     map[*Client]struct{}
+	flowClosed bool
+
+	in   chan []byte
 	done chan struct{}
 }
 
 func (s *Session) Done() <-chan struct{} { return s.done }
 
-func (s *Session) Subscribe() *Client {
+func (s *Session) subscribe() *Client {
 	c := &Client{C: make(chan []byte, 64), Dead: make(chan struct{})}
 	s.mu.Lock()
 	s.clients[c] = struct{}{}
 	s.mu.Unlock()
 	return c
-}
-
-func (s *Session) unsubscribe(c *Client) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.clients, c)
-	return len(s.clients) == 0
 }
 
 func (s *Session) clientCount() int {
@@ -228,21 +331,73 @@ func (s *Session) clientCount() int {
 }
 
 func (s *Session) Write(p []byte) error {
-	_, err := s.proc.Write(p)
-	return err
+	data := append([]byte(nil), p...)
+	select {
+	case s.in <- data:
+		return nil
+	case <-s.done:
+		return io.ErrClosedPipe
+	}
+}
+
+func (s *Session) writeLoop() {
+	for {
+		select {
+		case data := <-s.in:
+			if _, err := s.proc.Write(data); err != nil {
+				return
+			}
+		case <-s.done:
+			return
+		}
+	}
 }
 
 func (s *Session) Resize(rows, cols uint16) error {
 	return s.proc.Resize(rows, cols)
 }
 
+func (s *Session) SetPaused(c *Client, paused bool) {
+	s.flowMu.Lock()
+	if paused {
+		s.paused[c] = struct{}{}
+	} else {
+		delete(s.paused, c)
+	}
+	s.flowCond.Broadcast()
+	s.flowMu.Unlock()
+}
+
+func (s *Session) waitResumed() {
+	s.flowMu.Lock()
+	for len(s.paused) > 0 && !s.flowClosed {
+		s.flowCond.Wait()
+	}
+	s.flowMu.Unlock()
+}
+
+func (s *Session) closeFlow() {
+	s.flowMu.Lock()
+	s.flowClosed = true
+	s.flowCond.Broadcast()
+	s.flowMu.Unlock()
+}
+
 func (s *Session) Close() {
 	s.mu.Lock()
 	already := s.closed
 	s.closed = true
+	clients := make([]*Client, 0, len(s.clients))
+	for c := range s.clients {
+		clients = append(clients, c)
+	}
 	s.mu.Unlock()
+	s.closeFlow()
+	for _, c := range clients {
+		c.kill()
+	}
 	if s.Tmux {
-		_ = tmuxCommand("kill-session", "-t", s.Name).Run()
+		_ = tmuxCommand("", "kill-session", "-t", "="+s.Name).Run()
 	}
 	if !already {
 		s.proc.Kill()
@@ -252,6 +407,7 @@ func (s *Session) Close() {
 func (s *Session) pump(done func()) {
 	buf := make([]byte, 16*1024)
 	for {
+		s.waitResumed()
 		n, err := s.proc.Read(buf)
 		if n > 0 {
 			data := make([]byte, n)
@@ -267,22 +423,28 @@ func (s *Session) pump(done func()) {
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
+	s.closeFlow()
 	close(s.done)
 	done()
 }
 
 func (s *Session) broadcast(data []byte) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return
 	}
+	clients := make([]*Client, 0, len(s.clients))
 	for c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.mu.Unlock()
+	for _, c := range clients {
 		select {
 		case c.C <- data:
-		default:
-			delete(s.clients, c)
-			c.kill()
+		case <-c.Dead:
+		case <-s.done:
+			return
 		}
 	}
 }
@@ -299,11 +461,11 @@ func sessionEnv() []string {
 	return out
 }
 
-func tmuxScrubEnv() {
+func tmuxScrubEnv(conf string) {
 	for _, item := range os.Environ() {
 		key, _, _ := strings.Cut(item, "=")
 		if strings.HasPrefix(key, "NIT_") || strings.HasPrefix(key, "OPENCODE_") {
-			_ = tmuxCommand("set-environment", "-g", "-u", key).Run()
+			_ = tmuxCommand(conf, "set-environment", "-g", "-u", key).Run()
 		}
 	}
 }

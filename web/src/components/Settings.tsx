@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ConnState, SessionHello } from "./TerminalView";
 import { themes, themeById, type Prefs, type ThemeId } from "../lib/theme";
+import { peroHref } from "../lib/links";
 
 type Props = {
   hello: SessionHello | null;
@@ -63,9 +64,17 @@ export default function Settings({ hello, state, cwd, prefs, onFont, onTheme, on
 
   const path = cwd || hello?.dir || "";
   const theme = themeById(prefs.theme);
+  const openPero = () => {
+    if (!path) return;
+    window.open(peroHref(hello?.peroURL || "/pero/", path), "_blank", "noopener,noreferrer");
+  };
+  const openDrop = () => {
+    if (!hello?.dropURL) return;
+    window.open(hello.dropURL, "_blank", "noopener,noreferrer");
+  };
 
   return (
-    <div ref={rootRef} className="fixed bottom-3 right-3 z-20 flex flex-col items-end gap-2">
+    <div ref={rootRef} className="settings-root absolute bottom-3 right-3 z-20 flex flex-col items-end gap-2">
       {open ? (
         <div className="w-64 rounded-lg border border-border bg-card/95 p-3 text-xs shadow-xl backdrop-blur">
           <div className="mb-1 flex items-center gap-2">
@@ -75,6 +84,33 @@ export default function Settings({ hello, state, cwd, prefs, onFont, onTheme, on
           </div>
           <div className="mb-3 truncate font-mono text-[11px] text-muted-foreground" title={path}>
             {path || "…"}
+          </div>
+
+          <div className="mb-2 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={openPero}
+              disabled={!path}
+              aria-label="Open current directory in editor"
+              title="Open current directory in editor"
+              className="rounded border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+                <path d="M6 3H3v10h10v-3M9 3h4v4M13 3 7 9" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={openDrop}
+              disabled={!hello?.dropURL}
+              aria-label="Open drop"
+              title="Open drop"
+              className="rounded border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+                <path d="M8 2v7m0 0 2.5-2.5M8 9 5.5 6.5M3 10.5V13h10v-2.5" />
+              </svg>
+            </button>
           </div>
 
           <div className="flex items-center justify-between gap-2">
@@ -117,7 +153,7 @@ export default function Settings({ hello, state, cwd, prefs, onFont, onTheme, on
 
           <div className="mt-3 flex items-center justify-between gap-2">
             <span className="text-[10px] text-muted-foreground">
-              {theme.dark ? "dark" : "light"} · Ctrl+V paste · Ctrl+,
+              {theme.dark ? "dark" : "light"} · Ctrl+V paste · wheel scroll · drag copy · Ctrl+,
             </span>
             {state === "closed" ? (
               <button

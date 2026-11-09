@@ -110,23 +110,36 @@ Relative paths resolve against the last OSC 7 cwd, then the session directory.
 | `NIT_GATE_LOGIN_URL` | — | central login page; required when the gate is enabled |
 | `TERM_GUI_MAX_SESSIONS` | `8` | cap on concurrently attached PTYs |
 | `TERM_GUI_PERO_URL` | `/pero/` | base of the editor link target |
+| `TERM_GUI_DROP_URL` | — | absolute drop manager URL for the settings icon; `bin/deploy` sets `https://<host>/nit/drop/` |
 
-Sessions run under a private tmux server: `tmux -L term-gui -f /dev/null`, so
-they never touch the user's own tmux. Without tmux the app falls back to a plain
-`$SHELL`. Either way the session dies when the last browser disconnects, so a
-reload starts a fresh shell; open a second tab first if you need to survive it.
+Sessions run under a private tmux server with a generated config
+(`tmux -L term-gui -f <generated>`), so they never touch the user's own tmux.
+The config sets `status off`, `allow-passthrough on`, `history-limit 10000`,
+`escape-time 0`, `mouse on` and `set-clipboard on`. Without a working tmux the
+app falls back to a plain `$SHELL`. Either way the session dies when the last
+browser disconnects, so a reload starts a fresh shell; open a second tab first
+if you need to survive it.
+
+Scrollback is owned by tmux. The mouse wheel enters tmux copy-mode; dragging
+selects and copies through OSC 52. Hold Shift while dragging for xterm's native
+selection, which also copies on select. `history-limit` is 10000 lines. On a
+touch screen the mobile key bar has page-up/page-down buttons for the same
+copy-mode history; Escape leaves copy-mode.
 
 ## API
 
 - `GET /term/api/health` — `{ok, version, tmux, base}`
+- `GET /term/api/check?dir=...` or `?session=...` — 200, 400, 401, 409 or 429 with a JSON error
 - `GET /term/api/sessions` — `{sessions: [{name, dir, tmux, attached}]}`
 - `GET /term/api/ws?dir=...` or `?session=...` — binary WebSocket
 
 WebSocket protocol: the first client text frame is
 `{"type":"resize","rows":24,"cols":80,"pixelWidth":900,"pixelHeight":600}`;
-later keystrokes and clipboard paste are binary frames; PTY output is binary
-frames; `{"type":"hello",...}` is the only other text frame. Origin is checked
-against Host on the handshake, not only at the HTTP layer.
+later keystrokes and clipboard paste are binary frames, chunked at 64 KiB;
+`{"type":"flow","paused":true|false}` pauses and resumes PTY reads when the
+terminal falls behind. PTY output is binary frames; `{"type":"hello",...}` is
+the only other text frame. Origin is checked against Host on the handshake, not
+only at the HTTP layer.
 
 ## Kitty graphics
 

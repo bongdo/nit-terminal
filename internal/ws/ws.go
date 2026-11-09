@@ -25,6 +25,7 @@ type Handler struct {
 	Manager       *session.Manager
 	Home          string
 	PeroURL       string
+	DropURL       string
 	OriginAllowed func(*http.Request) bool
 	AllowNoOrigin bool
 }
@@ -36,12 +37,31 @@ type hello struct {
 	Home    string `json:"home"`
 	Tmux    bool   `json:"tmux"`
 	PeroURL string `json:"peroURL"`
+	DropURL string `json:"dropURL"`
 }
 
 type control struct {
-	Type string `json:"type"`
-	Rows int    `json:"rows"`
-	Cols int    `json:"cols"`
+	Type   string `json:"type"`
+	Rows   int    `json:"rows"`
+	Cols   int    `json:"cols"`
+	Paused bool   `json:"paused"`
+}
+
+func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
+	name, dir, err := session.Target(r.URL.Query(), h.Roots, h.Home)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.Manager.Validate(name, dir); err != nil {
+		status := http.StatusTooManyRequests
+		if errors.Is(err, session.ErrDirMismatch) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,8 +78,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.Manager.Capacity(name); err != nil {
-		writeError(w, http.StatusTooManyRequests, err.Error())
+	if err := h.Manager.Validate(name, dir); err != nil {
+		status := http.StatusTooManyRequests
+		if errors.Is(err, session.ErrDirMismatch) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
 		return
 	}
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -67,15 +91,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
-	c.SetReadLimit(1 << 20)
+	c.SetReadLimit(8 << 20)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	sess, err := h.Manager.Attach(name, dir, 24, 80)
+	sess, client, err := h.Manager.Attach(name, dir, 24, 80)
 	if err != nil {
 		status := websocket.StatusInternalError
-		if errors.Is(err, session.ErrTooMany) {
+		if errors.Is(err, session.ErrTooMany) || errors.Is(err, session.ErrDirMismatch) {
 			status = websocket.StatusPolicyViolation
 		}
 		payload, _ := json.Marshal(map[string]string{"type": "error", "error": err.Error()})
@@ -83,8 +107,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(status, err.Error())
 		return
 	}
-
-	client := sess.Subscribe()
 	defer h.Manager.Detach(sess, client)
 
 	go func() {
@@ -118,12 +140,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			switch kind {
 			case websocket.MessageText:
 				var msg control
-				if json.Unmarshal(data, &msg) != nil || msg.Type != "resize" {
+				if json.Unmarshal(data, &msg) != nil {
 					continue
 				}
-				rows, cols := clamp(msg.Rows), clamp(msg.Cols)
-				if rows > 0 && cols > 0 {
-					_ = sess.Resize(uint16(rows), uint16(cols))
+				switch msg.Type {
+				case "resize":
+					rows, cols := clamp(msg.Rows), clamp(msg.Cols)
+					if rows > 0 && cols > 0 {
+						_ = sess.Resize(uint16(rows), uint16(cols))
+					}
+				case "flow":
+					sess.SetPaused(client, msg.Paused)
 				}
 			case websocket.MessageBinary:
 				if len(data) == 0 {
@@ -145,6 +172,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Home:    h.Home,
 			Tmux:    sess.Tmux,
 			PeroURL: h.PeroURL,
+			DropURL: h.DropURL,
 		})
 		if err := writeMessage(ctx, c, websocket.MessageText, banner); err != nil {
 			return
@@ -202,4 +230,11 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }

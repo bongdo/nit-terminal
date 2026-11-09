@@ -9,6 +9,7 @@ base="${base%/}"
 roots="${TERM_GUI_ALLOWED_ROOTS:-$HOME}"
 host="${TERM_GUI_PUBLIC_HOST:-frankfurt.tailf358cb.ts.net}"
 pero="${TERM_GUI_PERO_URL:-https://$host/pero/}"
+drop="${TERM_GUI_DROP_URL:-https://$host/nit/drop/}"
 login_url="${NIT_GATE_LOGIN_URL:-https://$host/nit/auth}"
 auth_env="${TERM_GUI_AUTH_ENV:-$HOME/.config/nit-gui/auth.env}"
 run_dir="$PWD/.cache"
@@ -64,6 +65,7 @@ TERM_GUI_INSECURE=0 \
   TERM_GUI_ALLOWED_ORIGINS="$origin" \
   TERM_GUI_TRUST_PROXY=1 \
   TERM_GUI_PERO_URL="$pero" \
+  TERM_GUI_DROP_URL="$drop" \
   NIT_GATE_PASSWORD_HASH="$hash" \
   NIT_GATE_LOGIN_URL="$login_url" \
   setsid "$bin" --addr "127.0.0.1:$port" >"$run_dir/term-gui.log" 2>&1 </dev/null &

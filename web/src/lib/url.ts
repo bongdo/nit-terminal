@@ -39,3 +39,8 @@ export function wsURL(target: Target, location: Location): string {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${location.host}${apiBase(location.pathname)}/api/ws${queryFor(target)}`;
 }
+
+export function checkURL(target: Target, location: Location): string {
+  const scheme = location.protocol === "https:" ? "https:" : "http:";
+  return `${scheme}//${location.host}${apiBase(location.pathname)}/api/check${queryFor(target)}`;
+}

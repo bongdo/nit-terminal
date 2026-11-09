@@ -58,3 +58,23 @@ body {
 .xterm .xterm-viewport {
   background: transparent !important;
 }
+
+.mobile-keys {
+  display: none;
+  padding-bottom: env(safe-area-inset-bottom);
+  touch-action: manipulation;
+}
+
+@media (pointer: coarse) {
+  .mobile-keys {
+    display: flex;
+  }
+
+  .settings-root {
+    bottom: calc(4.25rem + env(safe-area-inset-bottom));
+  }
+
+  .toast-root {
+    bottom: calc(5rem + env(safe-area-inset-bottom));
+  }
+}

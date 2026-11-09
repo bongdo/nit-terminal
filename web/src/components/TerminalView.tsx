@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -6,10 +6,12 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
 import { coverDimensions } from "../lib/fit";
+import { chunkBytes } from "../lib/input";
 import { KittyStream, type KittyImage, type KittyPart, type KittyPixels } from "../lib/kitty";
 import { findPaths, peroHref, resolvePath } from "../lib/links";
+import { osc52Text } from "../lib/osc52";
 import { themeFor, type Prefs } from "../lib/theme";
-import { wsURL, type Target } from "../lib/url";
+import { checkURL, wsURL, type Target } from "../lib/url";
 
 export type ConnState = "connecting" | "open" | "closed";
 
@@ -20,7 +22,31 @@ export type SessionHello = {
   home: string;
   tmux: boolean;
   peroURL: string;
+  dropURL?: string;
 };
+
+const HIGH_WATERMARK = 4 * 1024 * 1024;
+const LOW_WATERMARK = 512 * 1024;
+const MAX_QUEUE = 32 * 1024 * 1024;
+const MAX_INPUT = 64 * 1024;
+
+const MOBILE_KEYS = [
+  { label: "Esc", data: "\x1b", aria: "Send Escape", scroll: 0 },
+  { label: "Tab", data: "\t", aria: "Send Tab", scroll: 0 },
+  { label: "←", data: "\x1b[D", aria: "Send Left", scroll: 0 },
+  { label: "↑", data: "\x1b[A", aria: "Send Up", scroll: 0 },
+  { label: "↓", data: "\x1b[B", aria: "Send Down", scroll: 0 },
+  { label: "→", data: "\x1b[C", aria: "Send Right", scroll: 0 },
+  { label: "⇞", data: "", aria: "Scroll up", scroll: -1 },
+  { label: "⇟", data: "", aria: "Scroll down", scroll: 1 },
+];
+
+function partSize(part: KittyPart): number {
+  if (typeof part === "string") return part.length;
+  if (part.kind === "pixels") return part.bytes.length;
+  if (part.kind === "image") return part.src.length;
+  return 0;
+}
 
 type Props = {
   target: Target;
@@ -58,14 +84,19 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
   const termRef = useRef<Terminal | null>(null);
   const fitNowRef = useRef<() => void>(() => {});
   const sendResizeRef = useRef<() => void>(() => {});
+  const sendKeyRef = useRef<(data: string) => void>(() => {});
   const metaRef = useRef<SessionHello | null>(null);
   const cwdRef = useRef("");
+  const tmuxRef = useRef<boolean | null>(null);
+  const ctrlArmedRef = useRef(false);
+  const [ctrlArmed, setCtrlArmed] = useState(false);
   const handlersRef = useRef({ onHello, onState, onCwd, onToast });
   handlersRef.current = { onHello, onState, onCwd, onToast };
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    tmuxRef.current = null;
 
     const term = new Terminal({
       fontFamily: '"JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace',
@@ -179,12 +210,34 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
     };
 
     const queue: KittyPart[] = [];
+    let queuedBytes = 0;
     let writing = false;
+    let flowPaused = false;
+    let dropped = false;
+    let socket: WebSocket | null = null;
+
+    const sendFlow = (paused: boolean) => {
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify({ type: "flow", paused }));
+    };
+
+    const updateFlow = () => {
+      if (queuedBytes > HIGH_WATERMARK && !flowPaused) {
+        flowPaused = true;
+        sendFlow(true);
+        handlersRef.current.onToast("Output paused: terminal is behind");
+      } else if (queuedBytes < LOW_WATERMARK && flowPaused) {
+        flowPaused = false;
+        sendFlow(false);
+        handlersRef.current.onToast("Output resumed");
+      }
+    };
 
     const pump = () => {
       if (writing) return;
       const part = queue.shift();
       if (part === undefined) return;
+      const size = partSize(part);
       if (typeof part === "string") {
         if (part === "") {
           pump();
@@ -193,6 +246,8 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
         writing = true;
         term.write(part, () => {
           writing = false;
+          queuedBytes = Math.max(0, queuedBytes - size);
+          updateFlow();
           pump();
         });
         return;
@@ -202,11 +257,33 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       } else {
         draw(part);
       }
+      queuedBytes = Math.max(0, queuedBytes - size);
+      updateFlow();
       pump();
     };
 
     const enqueue = (parts: KittyPart[]) => {
-      for (const part of parts) queue.push(part);
+      for (const part of parts) {
+        const size = partSize(part);
+        if (queuedBytes + size > MAX_QUEUE) {
+          if (!dropped) {
+            dropped = true;
+            handlersRef.current.onToast("Output dropped: terminal is too slow");
+          }
+          continue;
+        }
+        if (typeof part === "string" && queue.length > 0) {
+          const last = queue[queue.length - 1];
+          if (typeof last === "string" && last.length + part.length <= 64 * 1024) {
+            queue[queue.length - 1] = last + part;
+            queuedBytes += part.length;
+            continue;
+          }
+        }
+        queue.push(part);
+        queuedBytes += size;
+      }
+      updateFlow();
       pump();
     };
 
@@ -240,15 +317,8 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
     });
 
     const osc52 = term.parser.registerOscHandler(52, (data) => {
-      if (data.length > 200_000) return true;
-      const parts = data.split(";");
-      if (parts.length < 3 || parts[1] === "?" || parts[2].length > 100_000) return true;
-      try {
-        const bytes = Uint8Array.from(atob(parts[2]), (char) => char.charCodeAt(0));
-        copyText(new TextDecoder().decode(bytes), "Copied from terminal");
-      } catch {
-        void 0;
-      }
+      const text = osc52Text(data);
+      if (text !== null) copyText(text, "Copied from terminal");
       return true;
     });
 
@@ -288,8 +358,8 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       },
     });
 
-    let socket: WebSocket | null = null;
     let disposed = false;
+    let fatal = false;
     let retry = 0;
     let retryTimer = 0;
     let decoder = new TextDecoder();
@@ -312,8 +382,10 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
     sendResizeRef.current = sendResize;
 
     const send = (data: Uint8Array) => {
-      if (socket?.readyState === WebSocket.OPEN) socket.send(data.buffer as ArrayBuffer);
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      for (const chunk of chunkBytes(data, MAX_INPUT)) socket.send(chunk.slice().buffer as ArrayBuffer);
     };
+    sendKeyRef.current = (data: string) => send(encoder.encode(data));
 
     const paste = (event: MouseEvent) => {
       if (event.button !== 1) return;
@@ -322,13 +394,39 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       navigator.clipboard
         .readText()
         .then((text) => {
-          if (text) send(encoder.encode(text));
+          if (text) term.paste(text);
         })
         .catch(() => {});
     };
     host.addEventListener("mousedown", paste);
 
-    const connect = () => {
+    const preflight = async () => {
+      try {
+        const response = await fetch(checkURL(target, window.location), {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        if (response.ok) return true;
+        let message = `Request rejected (${response.status})`;
+        try {
+          const body = (await response.json()) as { error?: string };
+          if (body.error) message = body.error;
+        } catch {
+          void 0;
+        }
+        if (response.status === 401) message = "Session expired; reload to sign in";
+        handlersRef.current.onToast(message);
+        handlersRef.current.onState("closed");
+        return false;
+      } catch {
+        return true;
+      }
+    };
+
+    const connect = async () => {
+      if (disposed) return;
+      if (!(await preflight()) || disposed) return;
+      fatal = false;
       handlersRef.current.onState("connecting");
       const ws = new WebSocket(wsURL(target, window.location));
       socket = ws;
@@ -351,12 +449,14 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
           if (message.type === "hello") {
             const hello = message as SessionHello;
             metaRef.current = hello;
+            tmuxRef.current = hello.tmux;
             handlersRef.current.onHello(hello);
             if (hello.dir) {
               cwdRef.current = hello.dir;
               handlersRef.current.onCwd(hello.dir);
             }
           } else if (message.type === "error" && typeof message.error === "string") {
+            fatal = true;
             handlersRef.current.onToast(message.error);
           }
           return;
@@ -369,7 +469,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
         handlersRef.current.onState("closed");
         if (disposed) return;
         if (event.code === 1008) {
-          handlersRef.current.onToast(event.reason || "session rejected");
+          if (!fatal) handlersRef.current.onToast(event.reason || "session rejected");
           return;
         }
         const delay = Math.min(5000, 500 * 2 ** retry);
@@ -379,14 +479,26 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
           decoder = new TextDecoder();
           kitty = new KittyStream();
           queue.length = 0;
+          queuedBytes = 0;
+          flowPaused = false;
+          dropped = false;
           clearOverlays();
-          connect();
+          void connect();
         }, delay);
       };
     };
-    connect();
+    void connect();
 
-    const input = term.onData((data) => send(encoder.encode(data)));
+    const input = term.onData((data) => {
+      let output = data;
+      if (ctrlArmedRef.current && data.length === 1) {
+        const code = data.toUpperCase().charCodeAt(0);
+        if (code >= 64 && code <= 95) output = String.fromCharCode(code & 0x1f);
+        ctrlArmedRef.current = false;
+        setCtrlArmed(false);
+      }
+      send(encoder.encode(output));
+    });
 
     let frame = 0;
     const observer = new ResizeObserver(() => {
@@ -422,6 +534,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       termRef.current = null;
       fitNowRef.current = () => {};
       sendResizeRef.current = () => {};
+      sendKeyRef.current = () => {};
     };
   }, [target, reconnectToken]);
 
@@ -434,5 +547,86 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
     sendResizeRef.current();
   }, [prefs]);
 
-  return <div ref={hostRef} className="relative h-full w-full overflow-hidden rounded-md bg-background" />;
+  const sendKey = (data: string) => {
+    ctrlArmedRef.current = false;
+    setCtrlArmed(false);
+    sendKeyRef.current(data);
+    termRef.current?.focus();
+  };
+
+  const scrollTerminal = (delta: number) => {
+    ctrlArmedRef.current = false;
+    setCtrlArmed(false);
+    if (tmuxRef.current === false) {
+      termRef.current?.scrollPages(delta);
+    } else {
+      sendKeyRef.current(delta < 0 ? "\x1b[23~" : "\x1b[24~");
+    }
+    termRef.current?.focus();
+  };
+
+  const toggleCtrl = () => {
+    ctrlArmedRef.current = !ctrlArmedRef.current;
+    setCtrlArmed(ctrlArmedRef.current);
+    termRef.current?.focus();
+  };
+
+  const pasteClipboard = () => {
+    ctrlArmedRef.current = false;
+    setCtrlArmed(false);
+    const term = termRef.current;
+    if (!term || !navigator.clipboard) {
+      onToast("Clipboard unavailable");
+      return;
+    }
+    navigator.clipboard
+      .readText()
+      .then((text) => {
+        if (text) term.paste(text);
+        term.focus();
+      })
+      .catch(() => onToast("Clipboard blocked"));
+  };
+
+  return (
+    <div className="flex h-full w-full flex-col overflow-hidden">
+      <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden rounded-md bg-background" />
+      <div className="mobile-keys shrink-0 items-center gap-1 overflow-x-auto border-t border-border bg-card/95 px-2 py-1 backdrop-blur" aria-label="Mobile terminal keys">
+        <button
+          type="button"
+          onClick={toggleCtrl}
+          onPointerDown={(event) => event.preventDefault()}
+          aria-label="Sticky Ctrl"
+          aria-pressed={ctrlArmed}
+          title="Sticky Ctrl"
+          className={`min-w-9 rounded border px-1.5 py-1 text-xs ${ctrlArmed ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground"}`}
+        >
+          Ctrl
+        </button>
+        {MOBILE_KEYS.map((key) => (
+          <button
+            key={key.label}
+            type="button"
+            onClick={() => (key.scroll === 0 ? sendKey(key.data) : scrollTerminal(key.scroll))}
+            onPointerDown={(event) => event.preventDefault()}
+            aria-label={key.aria}
+            title={key.aria}
+            className="min-w-8 rounded border border-border px-1.5 py-1 text-xs text-muted-foreground"
+          >
+            {key.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={pasteClipboard}
+          onPointerDown={(event) => event.preventDefault()}
+          aria-label="Paste from clipboard"
+          title="Paste from clipboard"
+          className="ml-auto min-w-10 rounded border border-border px-1.5 py-1 text-xs text-muted-foreground"
+        >
+          Paste
+        </button>
+      </div>
+    </div>
+  );
 }
