@@ -27,13 +27,14 @@ prefix before proxying, so the app would receive `/` instead of `/term/` and
 answer 404. A root mount on a dedicated port preserves the path, which is what
 `base: "./"` and `apiBase()` in the SPA expect.
 
-`bin/deploy` refuses to start without the shared auth file. Every request
-without a valid `nit_gate` cookie gets the login page; `/api/*` gets `401`. The
-cookie is `HttpOnly`, `SameSite=Lax`, 7 days, `Path=/`, and `Secure` when the
-request arrives with `X-Forwarded-Proto: https`. It is an HMAC-signed expiry, so
-it survives restarts and is accepted by nit-gui and pero-gui on the same
-hostname. Five wrong passwords from one address block it for 15 minutes. Set
-`TERM_GUI_PERO_URL` when the editor lives on a different origin; `bin/deploy`
+`bin/deploy` refuses to start without the shared auth file. nit-gui is the only
+login page: every request without a valid `nit_gate` cookie is redirected to
+`https://<host>/nit/auth?next=<absolute URL>`; `/term/auth` and
+`/term/auth/logout` do not exist (404), and `/api/*` gets `401`. The cookie is
+`HttpOnly`, `SameSite=Lax`, 7 days, `Path=/`, and `Secure` when the request
+arrives with `X-Forwarded-Proto: https`. It is an HMAC-signed expiry, so it
+survives restarts and is accepted by nit-gui and pero-gui on the same hostname.
+Set `TERM_GUI_PERO_URL` when the editor lives on a different origin; `bin/deploy`
 defaults it to `https://<host>/pero/`.
 
 ## URL contract
@@ -95,7 +96,7 @@ Relative paths resolve against the last OSC 7 cwd, then the session directory.
 | `TERM_GUI_ALLOWED_ROOTS` | `$HOME` | allowed `dir` roots, path-list separated |
 | `TERM_GUI_AUTH_ENV` | `~/.config/nit-gui/auth.env` | shared auth file |
 | `NIT_GATE_PASSWORD_HASH` | from the shared auth file | one password for nit-gui, pero-gui and term-gui |
-| `NIT_GATE_PASSWORD` | — | plain local-development password |
+| `NIT_GATE_LOGIN_URL` | `https://<host>/nit/auth` | central login page for unauthenticated pages |
 | `TERM_GUI_MAX_SESSIONS` | `8` | cap on concurrently attached PTYs |
 | `TERM_GUI_PERO_URL` | `/pero/` | base of the editor link target |
 
@@ -146,9 +147,9 @@ trust as SSH on the host, so keep the password private and rotate it if it leaks
 - Host allowlist, `Origin` check on the WebSocket handshake, CSP, HSTS,
   `nosniff`, `X-Frame-Options: DENY`.
 - No query parameter runs a command; `?dir=` only selects a session directory.
-- 8 sessions max, 5 failed logins per address per 15 minutes. The signed
-  `nit_gate` cookie survives restarts and is shared with nit-gui and pero-gui;
-  it expires after 7 days.
+- 8 sessions max. The signed `nit_gate` cookie survives restarts, is shared with
+  nit-gui and pero-gui, and expires after 7 days. term-gui has no login page;
+  unauthenticated pages bounce to the central nit-gui gate.
 - Rotate with `bin/auth && bin/deploy`. Turn the public path off with
   `sudo tailscale funnel --set-path /term off`.
 
@@ -161,8 +162,6 @@ trust as SSH on the host, so keep the password private and rotate it if it leaks
   `kitty icat` without a passthrough flag will not display inside tmux.
 - The session cap counts attached PTYs. tmux sessions are destroyed with their
   last client, so stale sessions do not accumulate.
-- Auth state is in memory: a restart logs everyone out. The per-IP rate limit
-  trusts `X-Forwarded-For` only from loopback.
 - WebSocket Origin must equal Host. A proxy that rewrites Host breaks the
   handshake.
 - Path links are not checked on disk; the editor decides whether a path exists.

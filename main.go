@@ -88,7 +88,7 @@ func main() {
 	})
 	mux.Handle("/", spaHandler())
 
-	gate := auth.New(os.Getenv("TERM_GUI_PASSWORD"), basePath)
+	gate := auth.New(basePath, os.Getenv("NIT_GATE_LOGIN_URL"))
 	server := &http.Server{
 		Addr: *addrFlag,
 		Handler: logRequests(secure(
