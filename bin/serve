@@ -3,10 +3,27 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 port="${TERM_GUI_PORT:-7795}"
-https="${TERM_GUI_SERVE_HTTPS:-8443}"
+https="${TERM_GUI_FUNNEL_HTTPS:-8443}"
+base="${TERM_GUI_BASE:-/term}"
+base="${base%/}"
+auth_env="${NIT_GATE_AUTH_ENV:-$HOME/.config/nit-gui/auth.env}"
 
 if [ "${1:-}" = "off" ]; then
   exec sudo tailscale serve --https="$https" off
+fi
+
+if [ "${TERM_GUI_INSECURE:-}" = "1" ]; then
+  echo "serve: TERM_GUI_INSECURE is set; start the app with bin/deploy instead" >&2
+  exit 1
+fi
+if [ ! -r "$auth_env" ] || ! grep -qE '^NIT_(GATE|GUI)_PASSWORD_HASH=' "$auth_env"; then
+  echo "serve: no shared auth file; run ../nit-gui/bin/auth first" >&2
+  exit 1
+fi
+code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port$base/api/health" || true)"
+if [ "$code" != "401" ]; then
+  echo "serve: app is not running with the central gate (health: $code); run bin/deploy" >&2
+  exit 1
 fi
 
 exec sudo tailscale serve --bg --https="$https" "http://127.0.0.1:$port"

@@ -81,6 +81,19 @@ describe("KittyStream", () => {
     expect(pixels(result.parts)[0]).toMatchObject({ channels: 3, width: 1, height: 1 });
   });
 
+  test("rejects oversized PNG headers", () => {
+    const stream = new KittyStream();
+    const header = base64([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 1, 134, 160, 0, 1, 134, 160]);
+    const result = stream.push(`\x1b_Gf=100,a=T;${header}\x1b\\`);
+    expect(images(result.parts)).toHaveLength(0);
+  });
+
+  test("rejects oversized raw dimensions", () => {
+    const stream = new KittyStream();
+    const result = stream.push(`\x1b_Gf=32,a=T,s=9000,v=1;${base64([255, 0, 0, 255])}\x1b\\`);
+    expect(pixels(result.parts)).toHaveLength(0);
+  });
+
   test("rejects raw data of the wrong size", () => {
     const stream = new KittyStream();
     const result = stream.push(`\x1b_Gf=32,a=T,s=2,v=2;${base64([255, 0, 0, 255])}\x1b\\`);

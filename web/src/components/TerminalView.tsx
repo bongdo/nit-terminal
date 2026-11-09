@@ -74,6 +74,14 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
       cursorBlink: true,
       scrollback: 5000,
       allowProposedApi: true,
+      linkHandler: {
+        allowNonHttpProtocols: false,
+        activate: (_event, text) => {
+          if (text.length > 2000 || !/^https?:\/\//i.test(text)) return;
+          if (!window.confirm(`Open ${text}?`)) return;
+          window.open(text, "_blank", "noopener,noreferrer");
+        },
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -232,8 +240,9 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
     });
 
     const osc52 = term.parser.registerOscHandler(52, (data) => {
+      if (data.length > 200_000) return true;
       const parts = data.split(";");
-      if (parts.length < 3 || parts[1] === "?") return true;
+      if (parts.length < 3 || parts[1] === "?" || parts[2].length > 100_000) return true;
       try {
         const bytes = Uint8Array.from(atob(parts[2]), (char) => char.charCodeAt(0));
         copyText(new TextDecoder().decode(bytes), "Copied from terminal");

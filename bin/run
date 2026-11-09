@@ -9,4 +9,8 @@ if [ ! -f web/dist/index.html ] || [ -n "$(find web/src web/index.html web/packa
   npm --prefix web run build
 fi
 
+if [ -z "${NIT_GATE_PASSWORD_HASH:-}" ] && [ -z "${NIT_GUI_PASSWORD_HASH:-}" ]; then
+  export TERM_GUI_INSECURE=1
+fi
+
 exec go run . "$@"

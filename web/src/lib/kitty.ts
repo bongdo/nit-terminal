@@ -36,6 +36,8 @@ export type KittyCommand = {
 
 const MAX_DATA = 32 * 1024 * 1024;
 const MAX_STORED = 32;
+const MAX_IMAGE_PIXELS = 16_000_000;
+const MAX_IMAGE_SIDE = 8192;
 
 function findTerminator(input: string, from: number): number {
   let index = input.indexOf("\x1b\\", from);
@@ -78,6 +80,32 @@ function number(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function sizeAllowed(width: number, height: number): boolean {
+  return width > 0 && height > 0 && width <= MAX_IMAGE_SIDE && height <= MAX_IMAGE_SIDE && width * height <= MAX_IMAGE_PIXELS;
+}
+
+function pngSize(data: string): { width: number; height: number } | null {
+  if (data.length < 32) return null;
+  let head: string;
+  try {
+    head = atob(data.slice(0, 32));
+  } catch {
+    return null;
+  }
+  if (head.length < 24 || head.slice(0, 8) !== "\x89PNG\r\n\x1a\n" || head.slice(12, 16) !== "IHDR") return null;
+  return { width: readUint32(head, 16), height: readUint32(head, 20) };
+}
+
+function readUint32(value: string, offset: number): number {
+  return (
+    ((value.charCodeAt(offset) << 24) |
+      (value.charCodeAt(offset + 1) << 16) |
+      (value.charCodeAt(offset + 2) << 8) |
+      value.charCodeAt(offset + 3)) >>>
+    0
+  );
 }
 
 function positive(value: string | undefined): number | undefined {
@@ -235,16 +263,13 @@ export class KittyStream {
     if (command.data === "" || !/^[A-Za-z0-9+/=]+$/.test(command.data)) return null;
     const format = command.format ?? 32;
     if (format === 100) {
-      try {
-        atob(command.data);
-      } catch {
-        return null;
-      }
+      const size = pngSize(command.data);
+      if (!size || !sizeAllowed(size.width, size.height)) return null;
       return { kind: "image", src: `data:image/png;base64,${command.data}`, cols: command.cols, rows: command.rows, id: command.id };
     }
     const width = command.width;
     const height = command.height;
-    if (!width || !height) return null;
+    if (!width || !height || !sizeAllowed(width, height)) return null;
     const channels: 3 | 4 = format === 32 ? 4 : 3;
     let bytes: Uint8Array;
     try {

@@ -6,11 +6,16 @@ per workspace, and a URL contract instead of a bridge service.
 ## Run
 
 ```sh
-bin/run                 # builds the SPA when stale, serves 127.0.0.1:7795
+bin/run                 # local dev: 127.0.0.1:7795, gate off
 bin/check               # gofmt, vet, tests, typecheck, frontend tests, build
 ```
 
 Open <http://127.0.0.1:7795/term/>. Health is `GET /term/api/health`.
+
+`bin/run` is development only: when no shared hash is present it exports
+`TERM_GUI_INSECURE=1`, and the app refuses that mode on a non-loopback address.
+Any other launch must have `NIT_GATE_PASSWORD_HASH` and
+`NIT_GATE_LOGIN_URL`. There is no silent open mode.
 
 ## Access
 
@@ -27,14 +32,16 @@ prefix before proxying, so the app would receive `/` instead of `/term/` and
 answer 404. A root mount on a dedicated port preserves the path, which is what
 `base: "./"` and `apiBase()` in the SPA expect.
 
-`bin/deploy` refuses to start without the shared auth file. nit-gui is the only
-login page: every request without a valid `nit_gate` cookie is redirected to
-`https://<host>/nit/auth?next=<absolute URL>`; `/term/auth` and
+`bin/deploy` refuses to start without the shared auth file. `bin/funnel` and
+`bin/serve` refuse to publish unless the running app answers `/term/api/health`
+with `401`, so an insecure dev process cannot be exposed by accident.
+nit-gui is the only login page: every request without a valid `nit_gate` cookie
+is redirected to `https://<host>/nit/auth?next=<absolute URL>`; `/term/auth` and
 `/term/auth/logout` do not exist (404), and `/api/*` gets `401`. The cookie is
 `HttpOnly`, `SameSite=Lax`, 7 days, `Path=/`, and `Secure` when the request
-arrives with `X-Forwarded-Proto: https`. It is an HMAC-signed expiry, so it
-survives restarts and is accepted by nit-gui and pero-gui on the same hostname.
-Set `TERM_GUI_PERO_URL` when the editor lives on a different origin; `bin/deploy`
+arrives over HTTPS. It is an HMAC-signed expiry, so it survives restarts and is
+accepted by nit-gui and pero-gui on the same hostname. Set
+`TERM_GUI_PERO_URL` when the editor lives on a different origin; `bin/deploy`
 defaults it to `https://<host>/pero/`.
 
 ## URL contract
@@ -93,10 +100,14 @@ Relative paths resolve against the last OSC 7 cwd, then the session directory.
 | --- | --- | --- |
 | `TERM_GUI_BASE_PATH` | `/term` | URL prefix. Set to empty to serve at `/`. |
 | `TERM_GUI_ALLOWED_HOSTS` | — | comma-separated extra Host values; loopback always allowed |
-| `TERM_GUI_ALLOWED_ROOTS` | `$HOME` | allowed `dir` roots, path-list separated |
+| `TERM_GUI_ALLOWED_ORIGINS` | loopback origins on a loopback bind | required explicit `scheme://host:port` allowlist for Origin |
+| `TERM_GUI_TRUST_PROXY` | `0` | trust `X-Forwarded-Host`/`X-Forwarded-Proto`; set by `bin/deploy` for Funnel |
+| `TERM_GUI_ALLOW_NO_ORIGIN` | `0` | allow WebSocket clients without `Origin` (CLI only) |
+| `TERM_GUI_INSECURE` | `0` | local dev only: disable the gate, loopback bind required |
+| `TERM_GUI_ALLOWED_ROOTS` | `$HOME` | allowed `dir` and home roots, path-list separated |
 | `TERM_GUI_AUTH_ENV` | `~/.config/nit-gui/auth.env` | shared auth file |
-| `NIT_GATE_PASSWORD_HASH` | from the shared auth file | one password for nit-gui, pero-gui and term-gui |
-| `NIT_GATE_LOGIN_URL` | `https://<host>/nit/auth` | central login page for unauthenticated pages |
+| `NIT_GATE_PASSWORD_HASH` | — | shared PBKDF2-SHA256 hash; required unless `TERM_GUI_INSECURE=1` |
+| `NIT_GATE_LOGIN_URL` | — | central login page; required when the gate is enabled |
 | `TERM_GUI_MAX_SESSIONS` | `8` | cap on concurrently attached PTYs |
 | `TERM_GUI_PERO_URL` | `/pero/` | base of the editor link target |
 
@@ -138,20 +149,35 @@ Through tmux, use an emitter that wraps the sequence, for example
 ## Security
 
 The password is the only gate in front of a shell. The process runs as the
-service user; `TERM_GUI_ALLOWED_ROOTS` (default `$HOME`) only validates `?dir=`,
-and once a shell is open it can go anywhere that user can. That is the same
-trust as SSH on the host, so keep the password private and rotate it if it leaks.
+service user; `TERM_GUI_ALLOWED_ROOTS` (default `$HOME`) validates `?dir=` and
+the default/home session, and once a shell is open it can go anywhere that user
+can. That is the same trust as SSH on the host, so keep the password private and
+rotate it if it leaks.
 
 - Bind is loopback; TLS terminates in Tailscale. No TLS terminator in front of
   the app to misconfigure.
-- Host allowlist, `Origin` check on the WebSocket handshake, CSP, HSTS,
-  `nosniff`, `X-Frame-Options: DENY`.
-- No query parameter runs a command; `?dir=` only selects a session directory.
-- 8 sessions max. The signed `nit_gate` cookie survives restarts, is shared with
-  nit-gui and pero-gui, and expires after 7 days. term-gui has no login page;
+- Fail closed: without `NIT_GATE_PASSWORD_HASH` (or `NIT_GUI_PASSWORD_HASH`) the
+  process exits unless `TERM_GUI_INSECURE=1` is set and the listen address is
+  loopback. There is no other unauthenticated mode.
+- `Origin` is checked as an exact `scheme://host:port` against
+  `TERM_GUI_ALLOWED_ORIGINS`; loopback origins are added automatically for a
+  loopback bind. WS upgrades without `Origin` are rejected unless
+  `TERM_GUI_ALLOW_NO_ORIGIN=1`. `X-Forwarded-Host` is validated when present and
+  used only with `TERM_GUI_TRUST_PROXY=1` (set by `bin/deploy` for Funnel).
+- Host allowlist, CSP, HSTS, `nosniff`, `X-Frame-Options: DENY`, COOP/CORP.
+  API responses and errors are `no-store`; request paths are logged quoted.
+- PTY and tmux environments strip `NIT_*` and `OPENCODE_*`, so the shared hash
+  never reaches the shell.
+- `?dir=` only selects a session directory; no query parameter runs a command.
+  `?session=` uses the same roots-validated home.
+- 8 sessions max. The last client kills the tmux session explicitly and the PTY
+  process group; WS ping/pong and a write deadline drop half-open connections.
+- The signed `nit_gate` cookie survives restarts, is shared with nit-gui and
+  pero-gui, and expires after 7 days. term-gui has no login page;
   unauthenticated pages bounce to the central nit-gui gate.
-- Rotate with `bin/auth && bin/deploy`. Turn the public path off with
-  `sudo tailscale funnel --set-path /term off`.
+- Rotate with `bin/auth && bin/deploy`, and restart nit-gui and pero-gui as
+  well; a stale process keeps verifying with the old hash and redirect-loops.
+  Turn the public path off with `sudo tailscale funnel --set-path /term off`.
 
 ## Known limits
 
@@ -162,8 +188,12 @@ trust as SSH on the host, so keep the password private and rotate it if it leaks
   `kitty icat` without a passthrough flag will not display inside tmux.
 - The session cap counts attached PTYs. tmux sessions are destroyed with their
   last client, so stale sessions do not accumulate.
-- WebSocket Origin must equal Host. A proxy that rewrites Host breaks the
-  handshake.
+- WebSocket Origin must exactly match an entry in `TERM_GUI_ALLOWED_ORIGINS`.
+  A proxy that rewrites the public host must set `TERM_GUI_TRUST_PROXY=1` and
+  pass `X-Forwarded-Host`/`X-Forwarded-Proto`.
+- Kitty PNGs are capped at 8192 px per side and 16 megapixels; larger images are
+  ignored. OSC 52 clipboard writes are capped at 100 KB. OSC 8 links are limited
+  to `http(s)` and require confirmation.
 - Path links are not checked on disk; the editor decides whether a path exists.
 - Headless Chromium smoke tests cover Ctrl+V, `chafa` through tmux, raw
   `f=32`/`f=100` images, theme switching and the settings popover.

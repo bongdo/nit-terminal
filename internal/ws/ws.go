@@ -7,10 +7,17 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
 
 	"term-gui/internal/session"
+)
+
+const (
+	writeTimeout = 15 * time.Second
+	pingInterval = 30 * time.Second
+	pingTimeout  = 10 * time.Second
 )
 
 type Handler struct {
@@ -19,6 +26,7 @@ type Handler struct {
 	Home          string
 	PeroURL       string
 	OriginAllowed func(*http.Request) bool
+	AllowNoOrigin bool
 }
 
 type hello struct {
@@ -70,13 +78,33 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, session.ErrTooMany) {
 			status = websocket.StatusPolicyViolation
 		}
-		_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"error","error":"`+err.Error()+`"}`))
+		payload, _ := json.Marshal(map[string]string{"type": "error", "error": err.Error()})
+		_ = writeMessage(ctx, c, websocket.MessageText, payload)
 		_ = c.Close(status, err.Error())
 		return
 	}
 
 	client := sess.Subscribe()
 	defer h.Manager.Detach(sess, client)
+
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pingCtx, pingCancel := context.WithTimeout(ctx, pingTimeout)
+				err := c.Ping(pingCtx)
+				pingCancel()
+				if err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 
 	done := make(chan struct{}, 2)
 
@@ -118,13 +146,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Tmux:    sess.Tmux,
 			PeroURL: h.PeroURL,
 		})
-		if err := c.Write(ctx, websocket.MessageText, banner); err != nil {
+		if err := writeMessage(ctx, c, websocket.MessageText, banner); err != nil {
 			return
 		}
 		for {
 			select {
 			case data := <-client.C:
-				if err := c.Write(ctx, websocket.MessageBinary, data); err != nil {
+				if err := writeMessage(ctx, c, websocket.MessageBinary, data); err != nil {
 					return
 				}
 			case <-client.Dead:
@@ -141,10 +169,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	<-done
 }
 
+func writeMessage(ctx context.Context, c *websocket.Conn, kind websocket.MessageType, data []byte) error {
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	return c.Write(writeCtx, kind, data)
+}
+
 func (h *Handler) originOK(r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
-		return true
+		return h.AllowNoOrigin
 	}
 	if h.OriginAllowed != nil {
 		return h.OriginAllowed(r)
@@ -165,6 +199,7 @@ func clamp(value int) int {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

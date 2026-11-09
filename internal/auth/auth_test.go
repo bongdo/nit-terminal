@@ -1,10 +1,14 @@
 package auth
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -18,7 +22,10 @@ func testServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	t.Setenv("NIT_GATE_PASSWORD_HASH", "fixture")
 	t.Setenv("NIT_GUI_PASSWORD_HASH", "")
-	gate := New("/term", testLoginURL)
+	gate, err := New("/term", testLoginURL, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -35,6 +42,13 @@ func testServer(t *testing.T) *httptest.Server {
 
 func noRedirectClient() *http.Client {
 	return &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+func signedToken(secret []byte, expires time.Time) string {
+	payload := "v1." + strconv.FormatInt(expires.Unix(), 10)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(payload))
+	return payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func TestLocalAuthIsNotFound(t *testing.T) {
@@ -92,6 +106,66 @@ func TestUnauthenticatedAPIIs401(t *testing.T) {
 	}
 }
 
+func TestUnauthenticatedWebSocketIs401(t *testing.T) {
+	server := testServer(t)
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/term/api/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	resp, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestExpiredAndTamperedCookiesAreRejected(t *testing.T) {
+	server := testServer(t)
+	secret := gateSecret("fixture")
+	tokens := map[string]string{
+		"expired":   signedToken(secret, time.Now().Add(-time.Minute)),
+		"tampered":  testToken[:len(testToken)-1] + "A",
+		"malformed": "v1.nope.x",
+	}
+	for name, token := range tokens {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, server.URL+"/term/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.AddCookie(&http.Cookie{Name: CookieName, Value: token})
+			resp, err := noRedirectClient().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusSeeOther {
+				t.Fatalf("page status = %d, want 303", resp.StatusCode)
+			}
+			req, err = http.NewRequest(http.MethodGet, server.URL+"/term/api/health", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.AddCookie(&http.Cookie{Name: CookieName, Value: token})
+			resp, err = noRedirectClient().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("api status = %d, want 401", resp.StatusCode)
+			}
+		})
+	}
+}
+
 func TestSharedCookiePasses(t *testing.T) {
 	server := testServer(t)
 	req, err := http.NewRequest(http.MethodGet, server.URL+"/term/", nil)
@@ -109,10 +183,32 @@ func TestSharedCookiePasses(t *testing.T) {
 	}
 }
 
+func TestNoHashFailsClosed(t *testing.T) {
+	t.Setenv("NIT_GATE_PASSWORD_HASH", "")
+	t.Setenv("NIT_GUI_PASSWORD_HASH", "")
+	if _, err := New("/term", testLoginURL, false, false); err == nil {
+		t.Fatal("gate started without a hash")
+	}
+	if _, err := New("/term", testLoginURL, true, false); err != nil {
+		t.Fatalf("insecure gate: %v", err)
+	}
+}
+
+func TestGateRequiresLoginURL(t *testing.T) {
+	t.Setenv("NIT_GATE_PASSWORD_HASH", "fixture")
+	t.Setenv("NIT_GUI_PASSWORD_HASH", "")
+	if _, err := New("/term", "", false, false); err == nil {
+		t.Fatal("gate started without a login URL")
+	}
+}
+
 func TestAuthDisabledStillHidesLocalAuth(t *testing.T) {
 	t.Setenv("NIT_GATE_PASSWORD_HASH", "")
 	t.Setenv("NIT_GUI_PASSWORD_HASH", "")
-	gate := New("/term", testLoginURL)
+	gate, err := New("/term", "", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := gate.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

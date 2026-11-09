@@ -3,24 +3,28 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 port="${TERM_GUI_PORT:-7795}"
+https="${TERM_GUI_FUNNEL_HTTPS:-8443}"
 base="${TERM_GUI_BASE:-/term}"
 base="${base%/}"
-root="${TERM_GUI_ROOT:-$HOME}"
+roots="${TERM_GUI_ALLOWED_ROOTS:-$HOME}"
 host="${TERM_GUI_PUBLIC_HOST:-frankfurt.tailf358cb.ts.net}"
 pero="${TERM_GUI_PERO_URL:-https://$host/pero/}"
 login_url="${NIT_GATE_LOGIN_URL:-https://$host/nit/auth}"
 auth_env="${TERM_GUI_AUTH_ENV:-$HOME/.config/nit-gui/auth.env}"
 run_dir="$PWD/.cache"
 bin="$run_dir/term-gui"
+origin="https://$host"
+if [ "$https" != "443" ]; then
+  origin="$origin:$https"
+fi
 
 if [ ! -r "$auth_env" ]; then
   echo "deploy: no shared auth file; run ../nit-gui/bin/auth first" >&2
   exit 1
 fi
-set -a
 . "$auth_env"
-set +a
 hash="${NIT_GATE_PASSWORD_HASH:-${NIT_GUI_PASSWORD_HASH:-}}"
+export -n NIT_GATE_PASSWORD_HASH NIT_GUI_PASSWORD_HASH 2>/dev/null || true
 if [ -z "$hash" ]; then
   echo "deploy: no shared password hash in $auth_env; run ../nit-gui/bin/auth" >&2
   exit 1
@@ -53,9 +57,12 @@ if pgrep -f "(^|/)term-gui --addr 127\.0\.0\.1:$port$" >/dev/null; then
   exit 1
 fi
 
-TERM_GUI_ROOT="$root" \
+TERM_GUI_INSECURE=0 \
+  TERM_GUI_ALLOWED_ROOTS="$roots" \
   TERM_GUI_BASE_PATH="$base" \
   TERM_GUI_ALLOWED_HOSTS="$host" \
+  TERM_GUI_ALLOWED_ORIGINS="$origin" \
+  TERM_GUI_TRUST_PROXY=1 \
   TERM_GUI_PERO_URL="$pero" \
   NIT_GATE_PASSWORD_HASH="$hash" \
   NIT_GATE_LOGIN_URL="$login_url" \
@@ -64,8 +71,7 @@ TERM_GUI_ROOT="$root" \
 code=""
 for _ in $(seq 1 40); do
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$base/" || true)"
-  if [ "$code" = 303 ] || [ "$code" = 200 ]; then
-    https="${TERM_GUI_FUNNEL_HTTPS:-8443}"
+  if [ "$code" = "303" ]; then
     echo "deploy: local  http://127.0.0.1:$port$base/"
     echo "deploy: public https://$host:$https$base/"
     if ! tailscale funnel status 2>/dev/null | grep -q ":$https"; then

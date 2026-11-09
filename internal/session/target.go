@@ -39,7 +39,15 @@ func Target(q url.Values, roots *Roots, home string) (name, dir string, err erro
 		return rawName, resolved, nil
 	}
 	if rawName != "" {
-		return rawName, home, nil
+		resolved, err := roots.Resolve(home)
+		if err != nil {
+			return "", "", err
+		}
+		return rawName, resolved, nil
 	}
-	return NameForDir(home), home, nil
+	resolved, err := roots.Resolve(home)
+	if err != nil {
+		return "", "", err
+	}
+	return NameForDir(resolved), resolved, nil
 }

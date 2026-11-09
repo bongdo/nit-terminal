@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"log"
 	"os"
 	"os/exec"
 	"sort"
@@ -138,7 +139,7 @@ func (m *Manager) List() []Info {
 
 func tmuxCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("tmux", append([]string{"-L", "term-gui", "-f", "/dev/null"}, args...)...)
-	cmd.Env = envWithout("TMUX")
+	cmd.Env = sessionEnv()
 	return cmd
 }
 
@@ -161,11 +162,18 @@ func tmuxSessions() []Info {
 func start(name, dir string, tmux bool, shell func() []string, rows, cols uint16) (*Session, error) {
 	argv := shell()
 	if tmux {
-		_ = tmuxCommand("set-option", "-g", "destroy-unattached", "on").Run()
-		_ = tmuxCommand("set-option", "-g", "allow-passthrough", "on", ";", "set-option", "-g", "status", "off").Run()
+		if err := tmuxCommand("set-option", "-g", "destroy-unattached", "on").Run(); err != nil {
+			log.Printf("tmux destroy-unattached unavailable: %v", err)
+			tmux = false
+		} else {
+			tmuxScrubEnv()
+			_ = tmuxCommand("set-option", "-g", "allow-passthrough", "on", ";", "set-option", "-g", "status", "off").Run()
+		}
+	}
+	if tmux {
 		argv = []string{"tmux", "-L", "term-gui", "-f", "/dev/null", "new-session", "-A", "-s", name, "-c", dir}
 	}
-	env := envWithout("TMUX")
+	env := sessionEnv()
 	env = setEnv(env, "TERM", "xterm-256color")
 	env = setEnv(env, "COLORTERM", "truecolor")
 	proc, err := pty.Spawn(dir, argv, env, rows, cols)
@@ -230,9 +238,15 @@ func (s *Session) Resize(rows, cols uint16) error {
 
 func (s *Session) Close() {
 	s.mu.Lock()
+	already := s.closed
 	s.closed = true
 	s.mu.Unlock()
-	s.proc.Kill()
+	if s.Tmux {
+		_ = tmuxCommand("kill-session", "-t", s.Name).Run()
+	}
+	if !already {
+		s.proc.Kill()
+	}
 }
 
 func (s *Session) pump(done func()) {
@@ -273,15 +287,25 @@ func (s *Session) broadcast(data []byte) {
 	}
 }
 
-func envWithout(key string) []string {
+func sessionEnv() []string {
 	var out []string
 	for _, item := range os.Environ() {
-		if strings.HasPrefix(item, key+"=") {
+		key, _, _ := strings.Cut(item, "=")
+		if key == "TMUX" || strings.HasPrefix(key, "NIT_") || strings.HasPrefix(key, "OPENCODE_") {
 			continue
 		}
 		out = append(out, item)
 	}
 	return out
+}
+
+func tmuxScrubEnv() {
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if strings.HasPrefix(key, "NIT_") || strings.HasPrefix(key, "OPENCODE_") {
+			_ = tmuxCommand("set-environment", "-g", "-u", key).Run()
+		}
+	}
 }
 
 func setEnv(env []string, key, value string) []string {

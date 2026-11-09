@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,34 +14,37 @@ import (
 	"time"
 )
 
-const (
-	CookieName      = "nit_gate"
-	defaultLoginURL = "https://frankfurt.tailf358cb.ts.net/nit/auth"
-)
+const CookieName = "nit_gate"
 
 type Gate struct {
-	enabled  bool
-	secret   []byte
-	base     string
-	loginURL string
-	now      func() time.Time
+	enabled    bool
+	secret     []byte
+	base       string
+	loginURL   string
+	trustProxy bool
+	now        func() time.Time
 }
 
-func New(base, loginURL string) *Gate {
+func New(base, loginURL string, insecure, trustProxy bool) (*Gate, error) {
 	hash := strings.TrimSpace(os.Getenv("NIT_GATE_PASSWORD_HASH"))
 	if hash == "" {
 		hash = strings.TrimSpace(os.Getenv("NIT_GUI_PASSWORD_HASH"))
 	}
-	if loginURL = strings.TrimRight(strings.TrimSpace(loginURL), "/"); loginURL == "" {
-		loginURL = defaultLoginURL
+	loginURL = strings.TrimRight(strings.TrimSpace(loginURL), "/")
+	if hash == "" && !insecure {
+		return nil, errors.New("auth: NIT_GATE_PASSWORD_HASH is required; set TERM_GUI_INSECURE=1 only for loopback development")
+	}
+	if hash != "" && loginURL == "" {
+		return nil, errors.New("auth: NIT_GATE_LOGIN_URL is required when the gate is enabled")
 	}
 	return &Gate{
-		enabled:  hash != "",
-		secret:   gateSecret(hash),
-		base:     strings.TrimRight(strings.TrimSpace(base), "/"),
-		loginURL: loginURL,
-		now:      time.Now,
-	}
+		enabled:    hash != "",
+		secret:     gateSecret(hash),
+		base:       strings.TrimRight(strings.TrimSpace(base), "/"),
+		loginURL:   loginURL,
+		trustProxy: trustProxy,
+		now:        time.Now,
+	}, nil
 }
 
 func (a *Gate) Wrap(next http.Handler) http.Handler {
@@ -56,6 +60,7 @@ func (a *Gate) Wrap(next http.Handler) http.Handler {
 		}
 		if p := a.trimBase(r.URL.Path); p == "/api" || strings.HasPrefix(p, "/api/") {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "authentication required"})
 			return
@@ -70,12 +75,14 @@ func (a *Gate) loginTarget(r *http.Request) string {
 
 func (a *Gate) absoluteURL(r *http.Request) string {
 	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+	if r.TLS != nil || a.trustProxy {
 		scheme = "https"
 	}
-	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
-	if host == "" {
-		host = r.Host
+	host := r.Host
+	if a.trustProxy {
+		if forwarded := forwardedValue(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+			host = forwarded
+		}
 	}
 	return scheme + "://" + host + a.externalPath(r.URL.RequestURI())
 }
@@ -109,6 +116,11 @@ func (a *Gate) externalPath(path string) string {
 		return path
 	}
 	return a.base + path
+}
+
+func forwardedValue(value string) string {
+	parts := strings.Split(value, ",")
+	return strings.TrimSpace(parts[len(parts)-1])
 }
 
 func gateSecret(credential string) []byte {

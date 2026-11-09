@@ -3,6 +3,7 @@ package pty
 import (
 	"os"
 	"os/exec"
+	"syscall"
 
 	creackpty "github.com/creack/pty"
 )
@@ -36,8 +37,10 @@ func (p *Proc) Resize(rows, cols uint16) error {
 }
 
 func (p *Proc) Kill() {
-	if p.Cmd.Process != nil {
-		_ = p.Cmd.Process.Kill()
+	if p.Cmd.Process != nil && p.Cmd.ProcessState == nil {
+		if err := syscall.Kill(-p.Cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			_ = p.Cmd.Process.Kill()
+		}
 	}
 	_ = p.F.Close()
 }
