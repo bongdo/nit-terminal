@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 
 import Settings from "./components/Settings";
 import TerminalView, { type ConnState, type SessionHello } from "./components/TerminalView";
-import TopGlow from "./components/TopGlow";
 import { loadPrefs, savePrefs, themeFor, themeIsDark, type Prefs, type ThemeId } from "./lib/theme";
 import { parseTarget, type Target } from "./lib/url";
 
@@ -44,25 +43,23 @@ export default function App() {
 
   return (
     <div
-      className="relative flex h-dvh flex-col overflow-hidden text-foreground"
+      className="relative h-dvh overflow-hidden text-foreground"
       style={{ background: theme.background }}
     >
-      <TopGlow
-        background={theme.background ?? "#141413"}
-        ink={theme.foreground ?? "#f1efe9"}
-        accent={theme.cursor ?? "#e07a4f"}
+      <TerminalView
+        target={target}
+        prefs={prefs}
+        reconnectToken={reconnectToken}
+        onHello={setHello}
+        onState={setState}
+        onCwd={setCwd}
+        onToast={showToast}
       />
-      <div className="relative min-h-0 flex-1">
-        <TerminalView
-          target={target}
-          prefs={prefs}
-          reconnectToken={reconnectToken}
-          onHello={setHello}
-          onState={setState}
-          onCwd={setCwd}
-          onToast={showToast}
-        />
-      </div>
+      <div
+        aria-hidden
+        className="from-background via-background/80 pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b to-transparent pt-2 pb-5"
+        style={{ "--background": theme.background } as React.CSSProperties}
+      />
       {toast ? (
         <div
           key={toast.at}
