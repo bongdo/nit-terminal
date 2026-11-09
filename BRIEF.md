@@ -17,9 +17,10 @@ the terminal's job is speed, themes, selection, copying and image output.
 ## Product
 
 - A PTY per session, streamed over a binary WebSocket, rendered with xterm.js.
-- Sessions are tmux-backed: reload and reconnect keep the shell alive, several
-  devices can watch the same session. Fall back to a plain shell when tmux is
-  missing.
+- Sessions are tmux-backed while attached: several devices can watch the same
+  session, but when the last client disconnects the tmux session is destroyed.
+  Nothing is kept running in the background. Fall back to a plain shell when
+  tmux is missing.
 - One session per workspace directory, named deterministically from the
   absolute path. Explicit `?session=` selects another.
 - Copy on select. Ctrl/Cmd+V paste. OSC 52 copy from remote programs.
@@ -65,8 +66,8 @@ Anything else is a 400 before a PTY is spawned.
   rate limit, `next=` preserved). No new dependency for auth.
 - Validate `Origin` on the WebSocket handshake, not only `Host`. A WS upgrade
   bypasses CORS and CSRF protections.
-- Kill the PTY when the last client disconnects only if the session is not
-  tmux-backed; tmux sessions keep running.
+- Kill the PTY when the last client disconnects. tmux-backed sessions are
+  destroyed too, so no session outlives its last client.
 - Cap concurrent sessions (`TERM_GUI_MAX_SESSIONS`, default 8) and buffer size.
 
 ## Frontend

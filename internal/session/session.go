@@ -161,6 +161,7 @@ func tmuxSessions() []Info {
 func start(name, dir string, tmux bool, shell func() []string, rows, cols uint16) (*Session, error) {
 	argv := shell()
 	if tmux {
+		_ = tmuxCommand("set-option", "-g", "destroy-unattached", "on").Run()
 		_ = tmuxCommand("new-session", "-d", "-s", name, "-c", dir).Run()
 		_ = tmuxCommand("set-option", "-g", "allow-passthrough", "on", ";", "set-option", "-g", "status", "off").Run()
 		argv = []string{"tmux", "-L", "term-gui", "-f", "/dev/null", "attach-session", "-t", name}

@@ -101,8 +101,8 @@ Relative paths resolve against the last OSC 7 cwd, then the session directory.
 
 Sessions run under a private tmux server: `tmux -L term-gui -f /dev/null`, so
 they never touch the user's own tmux. Without tmux the app falls back to a plain
-`$SHELL`, which dies when the last browser disconnects. tmux sessions survive
-disconnects and reattach with a full redraw.
+`$SHELL`. Either way the session dies when the last browser disconnects, so a
+reload starts a fresh shell; open a second tab first if you need to survive it.
 
 ## API
 
@@ -159,9 +159,8 @@ trust as SSH on the host, so keep the password private and rotate it if it leaks
   in tmux DCS passthrough (for example `chafa --passthrough tmux`); tmux
   unwraps the DCS before it reaches the browser. Raw emitters such as
   `kitty icat` without a passthrough flag will not display inside tmux.
-- The session cap counts attached PTYs; background tmux sessions are listed but
-  are not counted and are never garbage collected. Kill them with
-  `tmux -L term-gui kill-session -t <name>`.
+- The session cap counts attached PTYs. tmux sessions are destroyed with their
+  last client, so stale sessions do not accumulate.
 - Auth state is in memory: a restart logs everyone out. The per-IP rate limit
   trusts `X-Forwarded-For` only from loopback.
 - WebSocket Origin must equal Host. A proxy that rewrites Host breaks the
