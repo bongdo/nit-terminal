@@ -590,7 +590,7 @@ export default function TerminalView({ target, prefs, reconnectToken, onHello, o
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
-      <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden rounded-md bg-background" />
+      <div ref={hostRef} className="relative mt-4 min-h-0 flex-1 overflow-hidden rounded-md bg-background" />
       <div className="mobile-keys shrink-0 items-center gap-1 overflow-x-auto border-t border-border bg-card/95 px-2 py-1 backdrop-blur" aria-label="Mobile terminal keys">
         <button
           type="button"
