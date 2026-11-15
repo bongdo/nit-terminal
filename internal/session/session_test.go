@@ -4,10 +4,33 @@ import (
 	"bytes"
 	"errors"
 	"net/url"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestGreetKeepsShell(t *testing.T) {
+	argv := greet([]string{"/bin/sh", "-c", "printf ok"})
+	out, err := exec.Command(argv[0], argv[1:]...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(out), "ok") {
+		t.Fatalf("output = %q, want it to end with the shell output", out)
+	}
+}
+
+func TestQuoteArgsSurviveSh(t *testing.T) {
+	argv := []string{"/bin/sh", "-c", `printf '%s|%s' "a b" 'c'`, "extra"}
+	out, err := exec.Command("/bin/sh", "-c", quoteArgs(argv)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "a b|c" {
+		t.Fatalf("output = %q, want %q", out, "a b|c")
+	}
+}
 
 func TestPtyOracle(t *testing.T) {
 	dir := t.TempDir()

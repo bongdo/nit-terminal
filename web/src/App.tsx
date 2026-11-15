@@ -79,11 +79,13 @@ export default function App() {
         onCwd={setCwd}
         onToast={showToast}
       />
-      <div
-        aria-hidden
-        className="from-background via-background/80 pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b to-transparent pt-2 pb-5"
-        style={{ "--background": theme.background } as React.CSSProperties}
-      />
+      {prefs.fade ? (
+        <div
+          aria-hidden
+          className="from-background via-background/80 pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b to-transparent pt-2 pb-5"
+          style={{ "--background": theme.background } as React.CSSProperties}
+        />
+      ) : null}
       {toast ? (
         <div
           key={toast.at}
@@ -100,6 +102,7 @@ export default function App() {
         prefs={prefs}
         onFont={changeFont}
         onTheme={(theme: ThemeId) => setPrefs((current) => ({ ...current, theme }))}
+        onFade={(fade: boolean) => setPrefs((current) => ({ ...current, fade }))}
         onReconnect={() => setReconnectToken((value) => value + 1)}
       />
     </div>

@@ -18,6 +18,7 @@ export type ThemeId =
 export type Prefs = {
   theme: ThemeId;
   fontSize: number;
+  fade: boolean;
 };
 
 type Ansi = [
@@ -215,12 +216,14 @@ export function loadPrefs(): Prefs {
   return {
     theme: isThemeId(stored) ? stored : migrate(stored, legacyPalette),
     fontSize: Number.isFinite(fontSize) && fontSize >= 9 && fontSize <= 28 ? fontSize : 14,
+    fade: localStorage.getItem("term-fade") === "1",
   };
 }
 
 export function savePrefs(prefs: Prefs): void {
   localStorage.setItem("term-theme", prefs.theme);
   localStorage.setItem("term-font", String(prefs.fontSize));
+  localStorage.setItem("term-fade", prefs.fade ? "1" : "0");
   localStorage.removeItem("term-palette");
 }
 

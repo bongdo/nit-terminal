@@ -106,7 +106,24 @@ func defaultShell() []string {
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	return []string{shell}
+	return greet([]string{shell})
+}
+
+const greetCommand = `command -v fastfetch >/dev/null 2>&1 && fastfetch; exec "$0" "$@"`
+
+func greet(argv []string) []string {
+	if len(argv) == 0 {
+		return argv
+	}
+	return append([]string{"/bin/sh", "-c", greetCommand, argv[0]}, argv[1:]...)
+}
+
+func quoteArgs(argv []string) string {
+	quoted := make([]string, len(argv))
+	for index, arg := range argv {
+		quoted[index] = "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
 }
 
 func (m *Manager) Home() string { return m.home }
@@ -235,7 +252,8 @@ func tmuxSessions() []Info {
 }
 
 func start(name, dir string, tmux bool, conf string, shell func() []string, rows, cols uint16) (*Session, error) {
-	argv := shell()
+	plain := shell()
+	argv := plain
 	if tmux {
 		if tmuxRunning(conf) {
 			if err := tmuxCommand(conf, "source-file", conf).Run(); err != nil {
@@ -247,7 +265,7 @@ func start(name, dir string, tmux bool, conf string, shell func() []string, rows
 			_ = tmuxCommand(conf, "set-option", "-g", "destroy-unattached", "off").Run()
 			tmuxScrubEnv(conf)
 			if err := tmuxCommand(conf, "has-session", "-t", "="+name).Run(); err != nil {
-				if out, err := tmuxCommand(conf, "new-session", "-d", "-s", name, "-c", dir).CombinedOutput(); err != nil {
+				if out, err := tmuxCommand(conf, "new-session", "-d", "-s", name, "-c", dir, quoteArgs(plain)).CombinedOutput(); err != nil {
 					log.Printf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 					tmux = false
 				}
@@ -264,7 +282,7 @@ func start(name, dir string, tmux bool, conf string, shell func() []string, rows
 	if err != nil && tmux {
 		_ = tmuxCommand(conf, "kill-session", "-t", "="+name).Run()
 		tmux = false
-		argv = shell()
+		argv = plain
 		proc, err = pty.Spawn(dir, argv, env, rows, cols)
 	}
 	if err != nil {

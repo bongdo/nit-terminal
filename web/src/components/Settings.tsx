@@ -11,6 +11,7 @@ type Props = {
   prefs: Prefs;
   onFont: (delta: number) => void;
   onTheme: (theme: ThemeId) => void;
+  onFade: (fade: boolean) => void;
   onReconnect: () => void;
 };
 
@@ -26,7 +27,7 @@ const stateLabel: Record<ConnState, string> = {
   closed: "disconnected",
 };
 
-export default function Settings({ hello, state, cwd, prefs, onFont, onTheme, onReconnect }: Props) {
+export default function Settings({ hello, state, cwd, prefs, onFont, onTheme, onFade, onReconnect }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -149,6 +150,16 @@ export default function Settings({ hello, state, cwd, prefs, onFont, onTheme, on
                 </option>
               ))}
             </select>
+          </label>
+
+          <label className="mt-2 flex items-center justify-between gap-2">
+            <span className="text-muted-foreground">Top fade</span>
+            <input
+              type="checkbox"
+              checked={prefs.fade}
+              onChange={(event) => onFade(event.target.checked)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
           </label>
 
           <div className="mt-3 flex items-center justify-between gap-2">
