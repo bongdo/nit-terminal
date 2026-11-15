@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"term-gui/internal/auth"
-	"term-gui/internal/session"
-	"term-gui/internal/ws"
+	"termcore/session"
+	"termcore/ws"
 )
 
 const version = "0.1.1"
