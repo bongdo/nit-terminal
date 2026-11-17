@@ -54,6 +54,12 @@ defaults it to `https://<host>/pero/`.
 
 The SPA strips the query with `history.replaceState` after reading it.
 
+The SPA also listens on the same-origin `BroadcastChannel` `nit-term`. A message
+`{type:"open", id, dir}` or `{session}` switches the attached session without a
+reload and is answered with `{type:"ack", id}`; nit-gui uses it for workspace
+links and falls back to a new tab when nothing answers. Switching kills the
+current tmux session when this browser is its only client, exactly like a reload.
+
 ## UI and keys
 
 The terminal fills the whole page. A floating button in the bottom-right corner

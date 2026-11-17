@@ -8,7 +8,7 @@ import { parseTarget, type Target } from "./lib/url";
 type Toast = { text: string; at: number };
 
 export default function App() {
-  const [target] = useState<Target>(() => {
+  const [target, setTarget] = useState<Target>(() => {
     const parsed = parseTarget(window.location.search);
     if (!window.location.search) {
       const saved = (window.history.state as { target?: Target } | null)?.target;
@@ -30,6 +30,35 @@ export default function App() {
     document.documentElement.classList.toggle("dark", themeIsDark(prefs));
     savePrefs(prefs);
   }, [prefs]);
+
+  useEffect(() => {
+    window.history.replaceState({ target }, "", window.location.pathname);
+  }, [target]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel("nit-term");
+    channel.onmessage = (
+      event: MessageEvent<{ type?: string; id?: string; dir?: unknown; session?: unknown }>,
+    ) => {
+      const data = event.data;
+      if (!data || data.type !== "open") return;
+      const dir = typeof data.dir === "string" ? data.dir.trim() : "";
+      const session = typeof data.session === "string" ? data.session.trim() : "";
+      if (!dir && !session) return;
+      const next: Target = dir ? { kind: "dir", dir } : { kind: "session", session };
+      channel.postMessage({ type: "ack", id: data.id });
+      window.focus();
+      setTarget((current) => {
+        if (current.kind === "dir" && next.kind === "dir" && current.dir === next.dir) return current;
+        if (current.kind === "session" && next.kind === "session" && current.session === next.session) {
+          return current;
+        }
+        return next;
+      });
+    };
+    return () => channel.close();
+  }, []);
 
   useEffect(() => {
     if (!toast) return;
