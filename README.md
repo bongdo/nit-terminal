@@ -1,4 +1,4 @@
-# term-gui
+# web-terminal
 
 A web terminal: one Go binary with an embedded React SPA, one tmux-backed shell
 per workspace, and a URL contract instead of a bridge service.
