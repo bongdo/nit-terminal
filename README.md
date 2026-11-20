@@ -3,6 +3,8 @@
 A web terminal: one Go binary with an embedded React SPA, one tmux-backed shell
 per workspace, and a URL contract instead of a bridge service.
 
+![web-terminal](docs/screenshots/terminal.png)
+
 ## Run
 
 ```sh
